@@ -34,4 +34,10 @@ void usb_hid_release_all(void);
 void usb_hid_release_keyboard(void);
 bool usb_hid_submit_keyboard(const usb_keyboard_report_t *report);
 
+/* Recovery primitive for canonical source teardown. Pending Keyboard reports
+ * are discarded and replaced with the exact aggregate state that remains after
+ * the failed source is released. This avoids a global neutral release of other
+ * still-owned keys/modifiers. */
+void usb_hid_replace_keyboard_state(const usb_keyboard_report_t *report);
+
 #endif

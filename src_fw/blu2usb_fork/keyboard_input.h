@@ -3,14 +3,17 @@
 
 #include <stdint.h>
 
+#include "canonical_source.h"
+
 #define KEYBOARD_INPUT_KEYCODE_COUNT 6u
 
-typedef enum {
-    KEYBOARD_SOURCE_CLASSIC_HID = 1u,
-    KEYBOARD_SOURCE_BLE_HOGP = 2u,
-    KEYBOARD_SOURCE_BLE_COMPOSITE = 3u,
-    KEYBOARD_SOURCE_SYNTHETIC = 4u,
-} keyboard_input_source_t;
+/* Compatibility names retained for transport adapters. Canonical source IDs
+ * are global across Keyboard, Mouse, Composite and Synthetic producers. */
+typedef canonical_source_id_t keyboard_input_source_t;
+#define KEYBOARD_SOURCE_CLASSIC_HID CANONICAL_SOURCE_CLASSIC_KEYBOARD
+#define KEYBOARD_SOURCE_BLE_HOGP CANONICAL_SOURCE_BLE_HOGP_KEYBOARD
+#define KEYBOARD_SOURCE_BLE_COMPOSITE CANONICAL_SOURCE_BLE_COMPOSITE_KEYBOARD
+#define KEYBOARD_SOURCE_SYNTHETIC CANONICAL_SOURCE_SYNTHETIC_REMAP
 
 typedef struct {
     uint8_t source;

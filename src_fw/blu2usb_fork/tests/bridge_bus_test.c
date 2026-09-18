@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "../bridge_bus.h"
+#include "../canonical_source.h"
 
 static bridge_message_t make_message(uint16_t type, uint8_t marker) {
     bridge_message_t message = {
@@ -24,16 +25,19 @@ int main(void) {
     assert(in.type == 10u && in.length == 1u && in.payload[0] == 0x11u);
     assert(!bridge_bus_take_bt_event(&in));
 
+    /* A dropped release-sensitive input latches only its stable source ID. */
     bridge_bus_init();
     for (uint16_t i = 0u; i < BRIDGE_QUEUE_CAPACITY; ++i) {
-        bridge_message_t message = make_message(i, (uint8_t)i);
+        bridge_message_t message = make_message(i, CANONICAL_SOURCE_CLASSIC_KEYBOARD);
         assert(bridge_bus_publish_bt_event(&message, true));
     }
-    out = make_message(0xEEEEu, 0xEEu);
+    out = make_message(0xEEEEu, CANONICAL_SOURCE_BLE_HOGP_KEYBOARD);
     assert(!bridge_bus_publish_bt_event(&out, true));
     assert(bridge_bus_take_bt_overflow());
     assert(!bridge_bus_take_bt_overflow());
-    assert(bridge_bus_take_release_required());
+    const uint32_t release_sources = bridge_bus_take_release_sources();
+    assert(release_sources == (UINT32_C(1) << CANONICAL_SOURCE_BLE_HOGP_KEYBOARD));
+    assert(bridge_bus_take_release_sources() == 0u);
     assert(!bridge_bus_take_release_required());
 
     bridge_bus_init();
@@ -55,11 +59,28 @@ int main(void) {
     assert(bridge_bus_take_app_overflow());
     assert(!bridge_bus_take_app_overflow());
 
+    /* If a release-sensitive event has no valid source byte, use the explicit
+     * global fallback instead of inventing a source identity. */
+    bridge_bus_init();
+    for (uint16_t i = 0u; i < BRIDGE_QUEUE_CAPACITY; ++i) {
+        out = make_message(i, CANONICAL_SOURCE_CLASSIC_KEYBOARD);
+        assert(bridge_bus_publish_bt_event(&out, false));
+    }
+    memset(&out, 0, sizeof(out));
+    out.channel = BRIDGE_CHANNEL_INPUT;
+    out.type = 0x9999u;
+    out.length = 0u;
+    assert(!bridge_bus_publish_bt_event(&out, true));
+    assert(bridge_bus_take_release_sources() == 0u);
+    assert(bridge_bus_take_release_required());
+    assert(!bridge_bus_take_release_required());
+
     bridge_bus_init();
     memset(&out, 0, sizeof(out));
     out.length = BRIDGE_MESSAGE_PAYLOAD_SIZE + 1u;
     assert(!bridge_bus_send_app_command(&out));
     assert(!bridge_bus_publish_bt_event(&out, true));
+    assert(bridge_bus_take_release_sources() == 0u);
     assert(!bridge_bus_take_release_required());
 
     return 0;

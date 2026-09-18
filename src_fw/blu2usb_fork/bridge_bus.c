@@ -12,6 +12,7 @@ typedef struct {
 
 static bridge_ring_t g_app_to_bt;
 static bridge_ring_t g_bt_to_app;
+static atomic_uint g_release_source_mask = ATOMIC_VAR_INIT(0u);
 static atomic_bool g_release_required = ATOMIC_VAR_INIT(false);
 
 static void ring_reset(bridge_ring_t *ring) {
@@ -65,9 +66,24 @@ static bool ring_take_overflow(bridge_ring_t *ring) {
         &ring->overflowed, false, memory_order_acq_rel);
 }
 
+static void latch_release_for_failed_message(const bridge_message_t *message) {
+    if (message->channel == BRIDGE_CHANNEL_INPUT && message->length >= 1u) {
+        const uint8_t source = message->payload[0];
+        if (source > 0u && source < 32u) {
+            atomic_fetch_or_explicit(
+                &g_release_source_mask,
+                (unsigned int)(UINT32_C(1) << source),
+                memory_order_acq_rel);
+            return;
+        }
+    }
+    atomic_store_explicit(&g_release_required, true, memory_order_release);
+}
+
 void bridge_bus_init(void) {
     ring_reset(&g_app_to_bt);
     ring_reset(&g_bt_to_app);
+    atomic_store_explicit(&g_release_source_mask, 0u, memory_order_relaxed);
     atomic_store_explicit(&g_release_required, false, memory_order_relaxed);
 }
 
@@ -85,7 +101,7 @@ bool bridge_bus_publish_bt_event(
     if (ring_publish(&g_bt_to_app, message)) return true;
 
     if (release_sensitive && message_valid(message)) {
-        atomic_store_explicit(&g_release_required, true, memory_order_release);
+        latch_release_for_failed_message(message);
     }
     return false;
 }
@@ -100,6 +116,11 @@ bool bridge_bus_take_app_overflow(void) {
 
 bool bridge_bus_take_bt_overflow(void) {
     return ring_take_overflow(&g_bt_to_app);
+}
+
+uint32_t bridge_bus_take_release_sources(void) {
+    return (uint32_t)atomic_exchange_explicit(
+        &g_release_source_mask, 0u, memory_order_acq_rel);
 }
 
 bool bridge_bus_take_release_required(void) {

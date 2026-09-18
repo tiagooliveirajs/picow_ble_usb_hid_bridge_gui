@@ -21,8 +21,10 @@ add_executable(blu2usb_fork_foundation
     main.c
     bridge_bus.c
     bt_runtime.c
+    canonical_hid.c
     classic_keyboard.c
     classic_keyboard_report.c
+    keyboard_report_queue.c
     storage_owner.c
     usb_hid.c
     usb_descriptors.c

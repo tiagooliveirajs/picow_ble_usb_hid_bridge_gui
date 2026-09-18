@@ -29,9 +29,14 @@ bool bridge_bus_take_bt_event(bridge_message_t *message);
 bool bridge_bus_take_app_overflow(void);
 bool bridge_bus_take_bt_overflow(void);
 
-/* If a release-sensitive BT->Core0 publication is dropped because the bounded
- * queue is full, this latch guarantees Core0 sees a release-all request even
- * when no queue slot is available. */
+/* For release-sensitive INPUT messages, payload[0] is the stable canonical
+ * source ID. If publication fails because the bounded BT->Core0 queue is full,
+ * the source bit is latched independently so Core0 can tear down only that
+ * source after draining older queued snapshots. */
+uint32_t bridge_bus_take_release_sources(void);
+
+/* Fallback for a release-sensitive publication whose source cannot be safely
+ * identified. This is intentionally separate from the normal source-aware path. */
 bool bridge_bus_take_release_required(void);
 
 #endif
