@@ -34,6 +34,7 @@ typedef enum {
     APP_INQUIRY,
     APP_RESOLVING_NAMES,
     APP_BONDING,
+    APP_WAITING_FOR_HID_START,
     APP_CONNECTING,
     APP_CONNECTED,
 } app_state_t;
@@ -46,11 +47,69 @@ static volatile uint16_t g_hid_host_cid;
 static volatile bool g_hid_descriptor_available;
 static uint8_t g_hid_descriptor_storage[HID_DESCRIPTOR_STORAGE_SIZE];
 static btstack_packet_callback_registration_t g_hci_event_callback_registration;
+static btstack_context_callback_registration_t g_start_hid_callback;
+static btstack_timer_source_t g_connect_diagnostic_timer;
 
 static void start_inquiry(void);
 static void request_next_remote_name(void);
 static void bond_target(const bd_addr_t address);
 static void connect_target(const bd_addr_t address);
+
+static void connect_diagnostic_timeout(btstack_timer_source_t *timer) {
+    UNUSED(timer);
+    if (g_app_state != APP_CONNECTING &&
+        !(g_app_state == APP_CONNECTED && !g_hid_descriptor_available)) return;
+    poc_logf("DIAG: HID setup still pending after 30s: state=%u cid=0x%04x SDP_ready=%u",
+             (unsigned)g_app_state, (uint16_t)g_hid_host_cid,
+             sdp_client_ready() ? 1u : 0u);
+    poc_logf("ACTION: save the full CDC log; no automatic rebond/retry was started");
+}
+
+static void arm_connect_diagnostic(void) {
+    btstack_run_loop_remove_timer(&g_connect_diagnostic_timer);
+    btstack_run_loop_set_timer_handler(&g_connect_diagnostic_timer,
+                                       connect_diagnostic_timeout);
+    btstack_run_loop_set_timer(&g_connect_diagnostic_timer, 30000u);
+    btstack_run_loop_add_timer(&g_connect_diagnostic_timer);
+}
+
+static void start_hid_after_bonding(void *context) {
+    UNUSED(context);
+    // An incoming HID connection may have already claimed the target.
+    if (g_app_state != APP_WAITING_FOR_HID_START) return;
+    poc_logf("CONNECT: deferred HID start after bonding event cleanup");
+    connect_target(g_target_addr);
+}
+
+static void handle_bonding_complete(uint8_t *packet) {
+    bd_addr_t address;
+    gap_event_dedicated_bonding_completed_get_address(packet, address);
+    const uint8_t status = gap_event_dedicated_bonding_completed_get_status(packet);
+    poc_logf("BOND: dedicated bonding complete status=0x%02x", status);
+    if (g_app_state != APP_BONDING || bd_addr_cmp(address, g_target_addr) != 0) {
+        poc_logf("BOND: completion outside active target bonding; ignoring");
+        return;
+    }
+    if (status != ERROR_CODE_SUCCESS) {
+        poc_logf("BOND: failed; keep keyboard in pairing mode and retrying discovery");
+        g_hid_host_cid = 0u;
+        g_hid_descriptor_available = false;
+        start_inquiry();
+        return;
+    }
+
+    poc_logf("BOND: Level 2 bonding complete (no MITM guarantee)");
+    // SDK 2.2.0 / BTstack 501e6d2 emits this event from inside the HCI
+    // disconnection handler BEFORE resetting/removing the old connection.
+    // hid_host_connect starts SDP synchronously and must not run here.
+    // The SDK async-context run loop queues this callback until event dispatch
+    // has returned. This is deferred execution, not a guessed radio delay.
+    g_app_state = APP_WAITING_FOR_HID_START;
+    g_start_hid_callback.callback = start_hid_after_bonding;
+    g_start_hid_callback.context = NULL;
+    btstack_run_loop_execute_on_main_thread(&g_start_hid_callback);
+    poc_logf("BOND: HID start queued until HCI cleanup finishes");
+}
 
 bool classic_hid_is_ready(void) {
     return g_app_state == APP_CONNECTED &&
@@ -71,6 +130,7 @@ static int device_index_for_address(const bd_addr_t address) {
 }
 
 static void start_inquiry(void) {
+    btstack_run_loop_remove_timer(&g_connect_diagnostic_timer);
     g_device_count = 0u;
     g_hid_descriptor_available = false;
     g_app_state = APP_INQUIRY;
@@ -122,13 +182,16 @@ static void bond_target(const bd_addr_t address) {
 }
 
 static void connect_target(const bd_addr_t address) {
-    memcpy(g_target_addr, address, sizeof(bd_addr_t));
+    if (address != g_target_addr) memcpy(g_target_addr, address, sizeof(bd_addr_t));
     gap_inquiry_stop();
 
     g_app_state = APP_CONNECTING;
     g_hid_descriptor_available = false;
 
     poc_logf("CONNECT: bonding complete; opening Bluetooth Classic HID host connection");
+    poc_logf("SDP: HID host will query service 0x1124; client_ready=%u",
+             sdp_client_ready() ? 1u : 0u);
+    arm_connect_diagnostic();
 
     uint16_t new_cid = 0u;
     const uint8_t status =
@@ -387,27 +450,37 @@ static void packet_handler(uint8_t packet_type,
             poc_logf("PAIRING: complete status=0x%02x", packet[10]);
             break;
 
-        case GAP_EVENT_DEDICATED_BONDING_COMPLETED: {
-            const uint8_t status = packet[2];
-            poc_logf("BOND: dedicated bonding complete status=0x%02x", status);
-
-            if (g_app_state != APP_BONDING) {
-                poc_logf("BOND: completion received outside bonding state; ignoring");
-                break;
-            }
-
-            if (status != ERROR_CODE_SUCCESS) {
-                poc_logf("BOND: failed; keep keyboard in pairing mode and retrying discovery");
-                g_hid_host_cid = 0u;
-                g_hid_descriptor_available = false;
-                start_inquiry();
-                break;
-            }
-
-            poc_logf("BOND: authenticated link key established");
-            connect_target(g_target_addr);
+        case GAP_EVENT_DEDICATED_BONDING_COMPLETED:
+            handle_bonding_complete(packet);
             break;
-        }
+
+        case HCI_EVENT_CONNECTION_COMPLETE:
+            hci_event_connection_complete_get_bd_addr(packet, event_addr);
+            poc_logf("ACL: connection complete addr=%s status=0x%02x handle=0x%04x",
+                     bd_addr_to_str(event_addr),
+                     hci_event_connection_complete_get_status(packet),
+                     hci_event_connection_complete_get_connection_handle(packet));
+            break;
+
+        case HCI_EVENT_DISCONNECTION_COMPLETE:
+            poc_logf("ACL: disconnection status=0x%02x handle=0x%04x reason=0x%02x",
+                     hci_event_disconnection_complete_get_status(packet),
+                     hci_event_disconnection_complete_get_connection_handle(packet),
+                     hci_event_disconnection_complete_get_reason(packet));
+            break;
+
+        case HCI_EVENT_AUTHENTICATION_COMPLETE:
+            poc_logf("ACL: authentication status=0x%02x handle=0x%04x",
+                     hci_event_authentication_complete_get_status(packet),
+                     hci_event_authentication_complete_get_connection_handle(packet));
+            break;
+
+        case HCI_EVENT_ENCRYPTION_CHANGE:
+            poc_logf("ACL: encryption status=0x%02x handle=0x%04x enabled=%u",
+                     hci_event_encryption_change_get_status(packet),
+                     hci_event_encryption_change_get_connection_handle(packet),
+                     hci_event_encryption_change_get_encryption_enabled(packet));
+            break;
 
         case HCI_EVENT_IO_CAPABILITY_REQUEST:
             poc_logf("SSP: controller requested our IO capability; local=NoInputNoOutput");
@@ -452,6 +525,7 @@ static void packet_handler(uint8_t packet_type,
                         hid_subevent_incoming_connection_get_hid_cid(packet);
                     g_app_state = APP_CONNECTING;
                     gap_inquiry_stop();
+                    arm_connect_diagnostic();
                     poc_logf("HID: incoming connection cid=0x%04x; accepting",
                              (uint16_t)g_hid_host_cid);
                     hid_host_accept_connection((uint16_t)g_hid_host_cid,
@@ -493,6 +567,7 @@ static void packet_handler(uint8_t packet_type,
                         hid_descriptor_storage_get_descriptor_data(cid);
 
                     g_hid_descriptor_available = true;
+                    btstack_run_loop_remove_timer(&g_connect_diagnostic_timer);
                     poc_log_hex("HID report descriptor", descriptor, descriptor_len);
                     poc_logf("POC READY: Classic HID connected; USB keyboard path active");
                     break;
@@ -544,6 +619,7 @@ static void packet_handler(uint8_t packet_type,
 }
 
 static void classic_hid_init(void) {
+    poc_logf("BUILD: deferred-hid-after-bond-v1");
     l2cap_init();
 
     hid_host_init(g_hid_descriptor_storage, sizeof(g_hid_descriptor_storage));

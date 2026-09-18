@@ -425,6 +425,24 @@ Use a fresh keyboard pairing slot if possible.
 
 ## 15. If the keyboard is found but pairing fails
 
+The latest physical test already reached pairing and bonding status `0x00` but
+stopped at `CONNECT: HID cid allocated`. Use the `deferred-hid-after-bond-v1`
+candidate on the same POC branch for that case. It defers HID/SDP startup until
+BTstack finishes processing the bonding disconnection. See the POC README for
+the code-level evidence and host-test limits.
+
+After updating and doing the clean build above, verify this boot marker:
+
+```text
+BUILD: deferred-hid-after-bond-v1
+```
+
+Use slot `FN+1` for this test. After the deferred-start marker, keep capturing
+for at least 40 seconds if `POC READY` does not appear: a one-shot `DIAG:` line
+is scheduled at 30 seconds while setup is pending. Save the full log even if
+that diagnostic is absent. Do not reset the Pico while collecting it.
+The candidate's physical HID/USB behavior remains unverified until this test.
+
 Keep the exact lines around:
 
 ```text

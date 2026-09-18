@@ -106,6 +106,70 @@ devices by holding **FN+ESC for 5 seconds**. Then:
 The POC also logs each received Classic HID input packet and the normalized USB
 keyboard state.
 
+## Post-bond HID stall candidate: deferred-hid-after-bond-v1
+
+The latest physical log at base `09221f86a4960ab1dae303838d76243a89fad319`
+shows successful SSP and dedicated bonding (`0x00`), then stops after HID CID
+allocation. It does **not** yet demonstrate a connected HID profile or USB typing.
+
+In Pico SDK 2.2.0's pinned BTstack
+`501e6d2b86e6c92bfb9c390bcf55709938e25ac1`, `hci.c` emits the dedicated-bonding
+result inside the disconnection handler, before resetting/removing the old ACL.
+`hid_host_connect(REPORT)` can immediately start SDP through a synchronous
+`sdp_client_register_query_callback`. Starting that work inside the bonding
+callback therefore races the old connection's teardown.
+Specifically, L2CAP moves to `WAIT_CONNECTION_COMPLETE` and sends Create Connection,
+but HCI still sees the old `SENT_DISCONNECT` entry and suppresses that command as
+`ERROR_CODE_ACL_CONNECTION_ALREADY_EXISTS`. The old entry is only removed later.
+
+This candidate queues HID startup with `btstack_run_loop_execute_on_main_thread`.
+The SDK async-context implementation executes the queued callback after event
+dispatch returns. The pending-state guard prevents a duplicate outgoing launch
+if an incoming connection has already taken over. Bond completion is checked
+against the active target address. Level 2/NoInputNoOutput, flash TLV, the two-core
+split, USB CDC and report normalization remain as before.
+
+New logs identify the build, deferred launch, ACL connection/authentication/
+encryption/disconnection and the SDP launch. A one-shot 30-second diagnostic
+reports unfinished HID setup without starting another pairing attempt. This is
+an observation timer, not a claim that the profile has failed or a radio timeout.
+`SDP_ready=0` means the SDP client is busy; it does not alone prove packet exchange.
+
+Expected additional markers (other events may be interleaved):
+
+```text
+BUILD: deferred-hid-after-bond-v1
+BOND: HID start queued until HCI cleanup finishes
+ACL: disconnection ...
+CONNECT: deferred HID start after bonding event cleanup
+SDP: HID host will query service 0x1124 ...
+ACL: connection complete ...
+HID: CONNECTION OPEN ...
+HID report descriptor ...
+POC READY ...
+```
+
+Validation: host GCC syntax checking with `-Wall -Wextra -Werror` against the
+exact BTstack headers; production transition tests for deferred execution,
+duplicate/foreign/failed completions, incoming takeover, immediate connect error,
+and diagnostic behavior. A scratch-only negative control restoring synchronous
+startup fails the old-ACL invariant. These are host tests with mocked hardware
+APIs; they do not execute the controller or prove physical compatibility.
+No full ARM firmware build or hardware test was performed for this candidate.
+
+Optional host regression test (from this directory):
+
+```sh
+PICO_SDK_PATH="$HOME/pico/pico-sdk" bash tests/run_host_test.sh
+```
+
+Implementation references:
+
+- [BTstack HCI lifecycle](https://github.com/bluekitchen/btstack/blob/501e6d2b86e6c92bfb9c390bcf55709938e25ac1/src/hci.c)
+- [HID host](https://github.com/bluekitchen/btstack/blob/501e6d2b86e6c92bfb9c390bcf55709938e25ac1/src/classic/hid_host.c)
+- [SDP client](https://github.com/bluekitchen/btstack/blob/501e6d2b86e6c92bfb9c390bcf55709938e25ac1/src/classic/sdp_client.c)
+- [SDK queued callback implementation](https://github.com/raspberrypi/pico-sdk/blob/2.2.0/src/rp2_common/pico_btstack/btstack_run_loop_async_context.c)
+
 ## Current intentional limitations
 
 - One target keyboard only.
