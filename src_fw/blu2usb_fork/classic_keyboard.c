@@ -19,7 +19,9 @@
 #define REMOTE_NAME_TIMEOUT_MS 5000u
 #define BONDING_TIMEOUT_MS 15000u
 #define HID_CONNECT_TIMEOUT_MS 15000u
+#define KNOWN_RECONNECT_CONNECT_TIMEOUT_MS 5000u
 #define RETRY_DELAY_MS 500u
+#define KNOWN_RECONNECT_RETRY_MS 1000u
 #define MANUAL_RETRY_DELAY_MS 100u
 
 typedef enum {
@@ -43,6 +45,7 @@ typedef enum {
     CLASSIC_WAITING_FOR_HID_START,
     CLASSIC_CONNECTING,
     CLASSIC_READY,
+    CLASSIC_KNOWN_RECONNECT_WAIT,
     CLASSIC_RETRY_WAIT,
     CLASSIC_CANCELLED,
 } classic_state_t;
@@ -53,6 +56,7 @@ static uint8_t g_device_count;
 static bd_addr_t g_target_addr;
 static bool g_target_valid;
 static bool g_stale_key_recovery_attempted;
+static bool g_known_reconnect_attempt;
 static volatile uint16_t g_hid_host_cid;
 static volatile bool g_hid_descriptor_available;
 static hci_con_handle_t g_target_acl_handle = HCI_CON_HANDLE_INVALID;
@@ -67,6 +71,7 @@ static void request_next_remote_name(void);
 static void bond_target(const bd_addr_t address);
 static void connect_target(const bd_addr_t address);
 static void schedule_retry(uint32_t delay_ms);
+static void schedule_known_reconnect(uint32_t delay_ms);
 
 static void publish_status(uint16_t event_type) {
     const bridge_message_t message = {
@@ -119,15 +124,45 @@ static void stop_active_transport(void) {
 
 static void retry_timeout(btstack_timer_source_t *timer) {
     (void)timer;
-    if (g_state != CLASSIC_RETRY_WAIT) return;
-    start_inquiry();
+
+    if (g_state == CLASSIC_KNOWN_RECONNECT_WAIT) {
+        if (!g_target_valid) {
+            schedule_retry(RETRY_DELAY_MS);
+            return;
+        }
+        g_known_reconnect_attempt = true;
+        connect_target(g_target_addr);
+        return;
+    }
+
+    if (g_state == CLASSIC_RETRY_WAIT) {
+        start_inquiry();
+    }
 }
 
 static void schedule_retry(uint32_t delay_ms) {
     btstack_run_loop_remove_timer(&g_phase_timer);
     btstack_run_loop_remove_timer(&g_retry_timer);
     clear_target_runtime();
+    g_known_reconnect_attempt = false;
     g_state = CLASSIC_RETRY_WAIT;
+    publish_status(BT_EVENT_CLASSIC_RETRYING);
+    btstack_run_loop_set_timer_handler(&g_retry_timer, retry_timeout);
+    btstack_run_loop_set_timer(&g_retry_timer, delay_ms);
+    btstack_run_loop_add_timer(&g_retry_timer);
+}
+
+static void schedule_known_reconnect(uint32_t delay_ms) {
+    if (!g_target_valid) {
+        schedule_retry(delay_ms);
+        return;
+    }
+
+    btstack_run_loop_remove_timer(&g_phase_timer);
+    btstack_run_loop_remove_timer(&g_retry_timer);
+    clear_target_runtime();
+    g_known_reconnect_attempt = true;
+    g_state = CLASSIC_KNOWN_RECONNECT_WAIT;
     publish_status(BT_EVENT_CLASSIC_RETRYING);
     btstack_run_loop_set_timer_handler(&g_retry_timer, retry_timeout);
     btstack_run_loop_set_timer(&g_retry_timer, delay_ms);
@@ -151,9 +186,15 @@ static void phase_timeout(btstack_timer_source_t *timer) {
     if (g_state == CLASSIC_BONDING ||
         g_state == CLASSIC_WAITING_FOR_HID_START ||
         g_state == CLASSIC_CONNECTING) {
+        const bool retry_known =
+            g_state == CLASSIC_CONNECTING && g_known_reconnect_attempt;
         stop_active_transport();
         publish_neutral_snapshot();
-        schedule_retry(RETRY_DELAY_MS);
+        if (retry_known) {
+            schedule_known_reconnect(KNOWN_RECONNECT_RETRY_MS);
+        } else {
+            schedule_retry(RETRY_DELAY_MS);
+        }
     }
 }
 
@@ -181,6 +222,7 @@ static void start_inquiry(void) {
     btstack_run_loop_remove_timer(&g_retry_timer);
     g_device_count = 0u;
     g_hid_descriptor_available = false;
+    g_known_reconnect_attempt = false;
     g_state = CLASSIC_INQUIRY;
     publish_status(BT_EVENT_CLASSIC_SCANNING);
 
@@ -197,6 +239,7 @@ static void bond_target(const bd_addr_t address) {
 
     memcpy(g_target_addr, address, sizeof(bd_addr_t));
     g_target_valid = true;
+    g_known_reconnect_attempt = false;
     gap_inquiry_stop();
     clear_target_runtime();
     g_state = CLASSIC_BONDING;
@@ -220,14 +263,20 @@ static void connect_target(const bd_addr_t address) {
     g_state = CLASSIC_CONNECTING;
     g_hid_descriptor_available = false;
     publish_status(BT_EVENT_CLASSIC_CONNECTING);
-    arm_phase_timeout(HID_CONNECT_TIMEOUT_MS);
+    arm_phase_timeout(g_known_reconnect_attempt
+        ? KNOWN_RECONNECT_CONNECT_TIMEOUT_MS
+        : HID_CONNECT_TIMEOUT_MS);
 
     uint16_t new_cid = 0u;
     const uint8_t status =
         hid_host_connect(g_target_addr, HID_PROTOCOL_MODE_REPORT, &new_cid);
     if (status != ERROR_CODE_SUCCESS) {
         g_hid_host_cid = 0u;
-        schedule_retry(RETRY_DELAY_MS);
+        if (g_known_reconnect_attempt) {
+            schedule_known_reconnect(KNOWN_RECONNECT_RETRY_MS);
+        } else {
+            schedule_retry(RETRY_DELAY_MS);
+        }
         return;
     }
 
@@ -237,6 +286,7 @@ static void connect_target(const bd_addr_t address) {
 static void start_hid_after_bonding(void *context) {
     (void)context;
     if (g_state != CLASSIC_WAITING_FOR_HID_START || !g_target_valid) return;
+    g_known_reconnect_attempt = false;
     connect_target(g_target_addr);
 }
 
@@ -252,9 +302,6 @@ static void handle_bonding_complete(uint8_t *packet) {
 
     if (status != ERROR_CODE_SUCCESS) {
         publish_neutral_snapshot();
-        /* A reset Keyboard can forget its Classic link key while Pico keeps
-         * the old one in BTstack TLV. Drop that one target key once, then let
-         * the normal bounded discovery/bonding path establish a fresh key. */
         if (!g_stale_key_recovery_attempted) {
             gap_drop_link_key_for_bd_addr(g_target_addr);
             g_stale_key_recovery_attempted = true;
@@ -266,6 +313,7 @@ static void handle_bonding_complete(uint8_t *packet) {
     }
 
     g_stale_key_recovery_attempted = false;
+    g_known_reconnect_attempt = false;
     btstack_run_loop_remove_timer(&g_phase_timer);
     g_state = CLASSIC_WAITING_FOR_HID_START;
     g_start_hid_callback.callback = start_hid_after_bonding;
@@ -379,6 +427,7 @@ static bool state_allows_known_target_reconnect(void) {
     return g_state == CLASSIC_BONDING ||
            g_state == CLASSIC_WAITING_FOR_HID_START ||
            g_state == CLASSIC_CONNECTING ||
+           g_state == CLASSIC_KNOWN_RECONNECT_WAIT ||
            g_state == CLASSIC_RETRY_WAIT ||
            g_state == CLASSIC_INQUIRY ||
            g_state == CLASSIC_RESOLVING_NAMES;
@@ -395,16 +444,20 @@ static void handle_hid_meta(uint8_t *packet, uint16_t size) {
                 break;
             }
 
-            /* A bonded Keyboard normally reconnects by initiating HID itself.
-             * Stop discovery/retry work and accept the known target directly. */
+            const bool reconnecting_known =
+                g_state == CLASSIC_KNOWN_RECONNECT_WAIT ||
+                g_known_reconnect_attempt;
             gap_inquiry_stop();
             btstack_run_loop_remove_timer(&g_phase_timer);
             btstack_run_loop_remove_timer(&g_retry_timer);
+            g_known_reconnect_attempt = reconnecting_known;
             g_hid_host_cid = cid;
             g_hid_descriptor_available = false;
             g_state = CLASSIC_CONNECTING;
             publish_status(BT_EVENT_CLASSIC_CONNECTING);
-            arm_phase_timeout(HID_CONNECT_TIMEOUT_MS);
+            arm_phase_timeout(g_known_reconnect_attempt
+                ? KNOWN_RECONNECT_CONNECT_TIMEOUT_MS
+                : HID_CONNECT_TIMEOUT_MS);
             hid_host_accept_connection(cid, HID_PROTOCOL_MODE_REPORT);
             break;
         }
@@ -413,13 +466,19 @@ static void handle_hid_meta(uint8_t *packet, uint16_t size) {
             const uint8_t status = hid_subevent_connection_opened_get_status(packet);
             if (status != ERROR_CODE_SUCCESS) {
                 publish_neutral_snapshot();
-                schedule_retry(RETRY_DELAY_MS);
+                if (g_known_reconnect_attempt) {
+                    schedule_known_reconnect(KNOWN_RECONNECT_RETRY_MS);
+                } else {
+                    schedule_retry(RETRY_DELAY_MS);
+                }
                 break;
             }
             g_hid_host_cid = hid_subevent_connection_opened_get_hid_cid(packet);
             g_state = CLASSIC_CONNECTING;
             g_hid_descriptor_available = false;
-            arm_phase_timeout(HID_CONNECT_TIMEOUT_MS);
+            arm_phase_timeout(g_known_reconnect_attempt
+                ? KNOWN_RECONNECT_CONNECT_TIMEOUT_MS
+                : HID_CONNECT_TIMEOUT_MS);
             break;
         }
 
@@ -428,13 +487,19 @@ static void handle_hid_meta(uint8_t *packet, uint16_t size) {
             const uint16_t descriptor_len =
                 hid_descriptor_storage_get_descriptor_len(g_hid_host_cid);
             if (status != ERROR_CODE_SUCCESS || descriptor_len == 0u) {
+                const bool retry_known = g_known_reconnect_attempt;
                 publish_neutral_snapshot();
                 stop_active_transport();
-                schedule_retry(RETRY_DELAY_MS);
+                if (retry_known) {
+                    schedule_known_reconnect(KNOWN_RECONNECT_RETRY_MS);
+                } else {
+                    schedule_retry(RETRY_DELAY_MS);
+                }
                 break;
             }
             g_hid_descriptor_available = true;
             g_stale_key_recovery_attempted = false;
+            g_known_reconnect_attempt = false;
             g_state = CLASSIC_READY;
             btstack_run_loop_remove_timer(&g_phase_timer);
             publish_status(BT_EVENT_CLASSIC_READY);
@@ -446,11 +511,18 @@ static void handle_hid_meta(uint8_t *packet, uint16_t size) {
             break;
 
         case HID_SUBEVENT_CONNECTION_CLOSED:
-            /* Ignore a late close from the previous HID session once retry,
-             * discovery or fresh bonding has already started. */
-            if (g_state == CLASSIC_CONNECTING || g_state == CLASSIC_READY) {
+            /* Recovery applies when g_state == CLASSIC_CONNECTING || g_state == CLASSIC_READY. */
+            if (g_state == CLASSIC_READY) {
                 publish_neutral_snapshot();
-                schedule_retry(RETRY_DELAY_MS);
+                schedule_known_reconnect(KNOWN_RECONNECT_RETRY_MS);
+            } else if (g_state == CLASSIC_CONNECTING) {
+                const bool retry_known = g_known_reconnect_attempt;
+                publish_neutral_snapshot();
+                if (retry_known) {
+                    schedule_known_reconnect(KNOWN_RECONNECT_RETRY_MS);
+                } else {
+                    schedule_retry(RETRY_DELAY_MS);
+                }
             }
             break;
 
@@ -503,19 +575,25 @@ static void packet_handler(uint8_t packet_type,
             if (handle != g_target_acl_handle) break;
             g_target_acl_handle = HCI_CON_HANDLE_INVALID;
 
-            // Dedicated bonding intentionally disconnects its ACL after the
-            // completion event. In WAITING_FOR_HID_START that disconnect is
-            // expected and must not race the deferred callback into retry.
             if (g_state == CLASSIC_WAITING_FOR_HID_START ||
                 g_state == CLASSIC_BONDING ||
                 g_state == CLASSIC_CANCELLED ||
+                g_state == CLASSIC_KNOWN_RECONNECT_WAIT ||
                 g_state == CLASSIC_RETRY_WAIT) {
                 break;
             }
 
-            if (g_state == CLASSIC_CONNECTING || g_state == CLASSIC_READY) {
+            if (g_state == CLASSIC_READY) {
                 publish_neutral_snapshot();
-                schedule_retry(RETRY_DELAY_MS);
+                schedule_known_reconnect(KNOWN_RECONNECT_RETRY_MS);
+            } else if (g_state == CLASSIC_CONNECTING) {
+                const bool retry_known = g_known_reconnect_attempt;
+                publish_neutral_snapshot();
+                if (retry_known) {
+                    schedule_known_reconnect(KNOWN_RECONNECT_RETRY_MS);
+                } else {
+                    schedule_retry(RETRY_DELAY_MS);
+                }
             }
             break;
         }
@@ -547,6 +625,7 @@ void classic_keyboard_init(void) {
     clear_target_runtime();
     g_target_valid = false;
     g_stale_key_recovery_attempted = false;
+    g_known_reconnect_attempt = false;
     g_device_count = 0u;
     g_state = CLASSIC_WAITING_FOR_STACK;
 
@@ -577,6 +656,7 @@ void classic_keyboard_handle_command(uint16_t command_type) {
             stop_active_transport();
             publish_neutral_snapshot();
             clear_target_runtime();
+            g_known_reconnect_attempt = false;
             g_state = CLASSIC_CANCELLED;
             publish_status(BT_EVENT_CLASSIC_CANCELLED);
             break;
@@ -585,6 +665,7 @@ void classic_keyboard_handle_command(uint16_t command_type) {
             stop_active_transport();
             publish_neutral_snapshot();
             g_stale_key_recovery_attempted = false;
+            g_known_reconnect_attempt = false;
             schedule_retry(MANUAL_RETRY_DELAY_MS);
             break;
 

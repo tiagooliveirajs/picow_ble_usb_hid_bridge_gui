@@ -20,6 +20,7 @@
 #define BLE_APPEARANCE_HID_MOUSE 962u
 #define BLE_APPEARANCE_HID_LAST 1023u
 #define BLE_MOUSE_BONDED_RECONNECT_TIMEOUT_MS 8000u
+#define BLE_MOUSE_RECOVERY_SCAN_WINDOW_MS 3000u
 
 _Static_assert(sizeof(canonical_mouse_event_t) <= BRIDGE_MESSAGE_PAYLOAD_SIZE,
                "canonical Mouse event must fit the bounded Core1->Core0 bridge");
@@ -57,8 +58,10 @@ static bool g_reconnect_timer_active;
 static bool g_reconnect_cancel_pending;
 static bool g_reconnect_after_disconnect;
 static bool g_scan_after_disconnect;
+static bool g_recovery_cycle_active;
 
-static void start_scan(void);
+static void start_scan(bool resume_bonded_recovery);
+static bool start_bonded_reconnect(void);
 static void reconnect_or_scan(void);
 
 static canonical_source_t mouse_source(void) {
@@ -147,29 +150,57 @@ static void stop_reconnect_timer(void) {
     g_reconnect_timer_active = false;
 }
 
-static void start_scan(void) {
+static void arm_reconnect_timer(uint32_t timeout_ms) {
+    stop_reconnect_timer();
+    btstack_run_loop_set_timer(&g_reconnect_timer, timeout_ms);
+    btstack_run_loop_add_timer(&g_reconnect_timer);
+    g_reconnect_timer_active = true;
+}
+
+static void start_scan(bool resume_bonded_recovery) {
     stop_reconnect_timer();
     g_reconnect_cancel_pending = false;
+    g_recovery_cycle_active = resume_bonded_recovery;
     g_state = BLE_MOUSE_SCANNING;
     publish_status(BT_EVENT_BLE_MOUSE_SCANNING);
     gap_set_scan_parameters(0u, 48u, 48u);
     gap_start_scan();
+
+    if (resume_bonded_recovery) {
+        arm_reconnect_timer(BLE_MOUSE_RECOVERY_SCAN_WINDOW_MS);
+    }
 }
 
 static void reconnect_timeout_handler(btstack_timer_source_t *timer) {
     (void)timer;
     g_reconnect_timer_active = false;
+
+    if (g_state == BLE_MOUSE_SCANNING && g_recovery_cycle_active) {
+        gap_stop_scan();
+        if (!start_bonded_reconnect()) start_scan(false);
+        return;
+    }
+
     if (g_state != BLE_MOUSE_CONNECTING) return;
+
+    const bool resume_bonded_recovery = g_recovery_cycle_active;
     g_reconnect_cancel_pending = true;
-    if (gap_connect_cancel() != ERROR_CODE_SUCCESS) start_scan();
+    if (gap_connect_cancel() != ERROR_CODE_SUCCESS) {
+        g_reconnect_cancel_pending = false;
+        start_scan(resume_bonded_recovery);
+    }
 }
 
 static bool start_bonded_reconnect(void) {
     const int count = le_device_db_count();
-    if (count <= 0) return false;
+    if (count <= 0) {
+        g_recovery_cycle_active = false;
+        return false;
+    }
 
     stop_reconnect_timer();
     g_reconnect_cancel_pending = false;
+    g_recovery_cycle_active = true;
     (void)gap_whitelist_clear();
     (void)gap_load_resolving_list_from_le_device_db();
 
@@ -190,18 +221,18 @@ static bool start_bonded_reconnect(void) {
         ++added;
     }
 
-    if (added == 0u || gap_connect_with_whitelist() != ERROR_CODE_SUCCESS) return false;
+    if (added == 0u || gap_connect_with_whitelist() != ERROR_CODE_SUCCESS) {
+        return false;
+    }
 
     g_state = BLE_MOUSE_CONNECTING;
     publish_status(BT_EVENT_BLE_MOUSE_CONNECTING);
-    btstack_run_loop_set_timer(&g_reconnect_timer, BLE_MOUSE_BONDED_RECONNECT_TIMEOUT_MS);
-    btstack_run_loop_add_timer(&g_reconnect_timer);
-    g_reconnect_timer_active = true;
+    arm_reconnect_timer(BLE_MOUSE_BONDED_RECONNECT_TIMEOUT_MS);
     return true;
 }
 
 static void reconnect_or_scan(void) {
-    if (!start_bonded_reconnect()) start_scan();
+    if (!start_bonded_reconnect()) start_scan(false);
 }
 
 static void disconnect_current(bool reconnect_bonded, bool scan_after) {
@@ -222,11 +253,16 @@ static void disconnect_current(bool reconnect_bonded, bool scan_after) {
     g_reconnect_after_disconnect = false;
     g_scan_after_disconnect = false;
     if (reconnect_bonded) reconnect_or_scan();
-    else if (scan_after) start_scan();
-    else g_state = BLE_MOUSE_CANCELLED;
+    else if (scan_after) start_scan(false);
+    else {
+        g_recovery_cycle_active = false;
+        g_state = BLE_MOUSE_CANCELLED;
+    }
 }
 
-static void disconnect_and_rescan(void) { disconnect_current(false, true); }
+static void disconnect_and_rescan(void) {
+    disconnect_current(false, true);
+}
 
 static void connect_hid_service(void);
 
@@ -240,7 +276,10 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
     switch (hci_event_gattservice_meta_get_subevent_code(packet)) {
     case GATTSERVICE_SUBEVENT_HID_SERVICE_CONNECTED: {
         const uint8_t status = gattservice_subevent_hid_service_connected_get_status(packet);
-        if (status != ERROR_CODE_SUCCESS) { disconnect_and_rescan(); return; }
+        if (status != ERROR_CODE_SUCCESS) {
+            disconnect_and_rescan();
+            return;
+        }
         const uint8_t *descriptor =
             hids_client_descriptor_storage_get_descriptor_data(g_hids_cid, 0u);
         const uint16_t descriptor_len =
@@ -257,13 +296,12 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
         g_state = BLE_MOUSE_READY;
         g_reconnect_after_disconnect = false;
         g_scan_after_disconnect = false;
+        g_recovery_cycle_active = false;
         publish_status(BT_EVENT_BLE_MOUSE_READY);
         break;
     }
+
     case GATTSERVICE_SUBEVENT_HID_SERVICE_DISCONNECTED:
-        /* BTstack can deliver this service-level close after the HCI close has
-         * already moved us into reconnect/scan. Never let that stale event
-         * overwrite the new recovery state with CANCELLED. */
         if (g_state == BLE_MOUSE_READY) {
             disconnect_current(true, false);
         } else if (g_state == BLE_MOUSE_SECURING ||
@@ -271,6 +309,7 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
             disconnect_and_rescan();
         }
         break;
+
     case GATTSERVICE_SUBEVENT_HID_REPORT: {
         if (g_state != BLE_MOUSE_READY) break;
         const uint8_t report_id = gattservice_subevent_hid_report_get_report_id(packet);
@@ -281,6 +320,7 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
             disconnect_and_rescan();
         break;
     }
+
     default:
         break;
     }
@@ -318,6 +358,8 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             reject_address(address, type);
             break;
         }
+
+        const bool resume_bonded_recovery = g_recovery_cycle_active;
         gap_stop_scan();
         stop_reconnect_timer();
         memcpy(g_remote_address, address, sizeof(bd_addr_t));
@@ -326,7 +368,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         g_state = BLE_MOUSE_CONNECTING;
         publish_status(BT_EVENT_BLE_MOUSE_CONNECTING);
         if (gap_connect(g_remote_address, g_remote_address_type) != ERROR_CODE_SUCCESS)
-            start_scan();
+            start_scan(resume_bonded_recovery);
         break;
     }
 
@@ -334,11 +376,12 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         if (hci_event_gap_meta_get_subevent_code(packet) == GAP_SUBEVENT_LE_CONNECTION_COMPLETE &&
             g_state == BLE_MOUSE_CONNECTING) {
             stop_reconnect_timer();
+            const bool resume_bonded_recovery = g_recovery_cycle_active;
             const uint8_t status = gap_subevent_le_connection_complete_get_status(packet);
             if (status != ERROR_CODE_SUCCESS) {
                 g_connection_handle = HCI_CON_HANDLE_INVALID;
                 g_reconnect_cancel_pending = false;
-                start_scan();
+                start_scan(resume_bonded_recovery);
                 break;
             }
             g_reconnect_cancel_pending = false;
@@ -352,8 +395,6 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
     case HCI_EVENT_DISCONNECTION_COMPLETE: {
         const hci_con_handle_t handle =
             hci_event_disconnection_complete_get_connection_handle(packet);
-        /* One controller owns BLE Mouse and Classic Keyboard. A Classic ACL
-         * teardown must never reset or restart the independent BLE Mouse state. */
         if (g_connection_handle == HCI_CON_HANDLE_INVALID || handle != g_connection_handle)
             break;
 
@@ -370,9 +411,14 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         }
         g_reconnect_after_disconnect = false;
         g_scan_after_disconnect = false;
-        if (reconnect_bonded) reconnect_or_scan();
-        else if (scan_after) start_scan();
-        else g_state = BLE_MOUSE_CANCELLED;
+        if (reconnect_bonded) {
+            reconnect_or_scan();
+        } else if (scan_after) {
+            start_scan(false);
+        } else {
+            g_recovery_cycle_active = false;
+            g_state = BLE_MOUSE_CANCELLED;
+        }
         break;
     }
 
@@ -398,20 +444,28 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel,
         if (event_handle_matches(handle)) sm_just_works_confirm(handle);
         break;
     }
+
     case SM_EVENT_NUMERIC_COMPARISON_REQUEST: {
         const hci_con_handle_t handle = sm_event_numeric_comparison_request_get_handle(packet);
         if (event_handle_matches(handle)) sm_numeric_comparison_confirm(handle);
         break;
     }
+
     case SM_EVENT_PAIRING_COMPLETE:
         if (!event_handle_matches(sm_event_pairing_complete_get_handle(packet))) break;
-        if (sm_event_pairing_complete_get_status(packet) == ERROR_CODE_SUCCESS) ready = true;
-        else disconnect_and_rescan();
+        if (sm_event_pairing_complete_get_status(packet) == ERROR_CODE_SUCCESS) {
+            ready = true;
+        } else {
+            disconnect_and_rescan();
+        }
         break;
+
     case SM_EVENT_REENCRYPTION_COMPLETE:
         if (!event_handle_matches(sm_event_reencryption_complete_get_handle(packet))) break;
-        if (sm_event_reencryption_complete_get_status(packet) == ERROR_CODE_SUCCESS) ready = true;
-        else if (sm_event_reencryption_complete_get_status(packet) == ERROR_CODE_PIN_OR_KEY_MISSING) {
+        if (sm_event_reencryption_complete_get_status(packet) == ERROR_CODE_SUCCESS) {
+            ready = true;
+        } else if (sm_event_reencryption_complete_get_status(packet) ==
+                   ERROR_CODE_PIN_OR_KEY_MISSING) {
             bd_addr_t address;
             sm_event_reencryption_complete_get_address(packet, address);
             const bd_addr_type_t type =
@@ -422,6 +476,7 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel,
             disconnect_and_rescan();
         }
         break;
+
     default:
         break;
     }
@@ -442,6 +497,7 @@ void ble_mouse_init(void) {
     g_reconnect_cancel_pending = false;
     g_reconnect_after_disconnect = false;
     g_scan_after_disconnect = false;
+    g_recovery_cycle_active = false;
 
     hids_client_init(g_descriptor_storage, sizeof(g_descriptor_storage));
     g_hci_registration.callback = &hci_packet_handler;
@@ -456,23 +512,27 @@ void ble_mouse_handle_command(uint16_t command_type) {
     case BT_COMMAND_BLE_MOUSE_RETRY:
         gap_stop_scan();
         stop_reconnect_timer();
+        g_recovery_cycle_active = false;
         if (g_connection_handle != HCI_CON_HANDLE_INVALID) {
             disconnect_current(false, true);
         } else {
             (void)gap_connect_cancel();
-            start_scan();
+            start_scan(false);
         }
         break;
+
     case BT_COMMAND_BLE_MOUSE_CANCEL:
         gap_stop_scan();
         stop_reconnect_timer();
-        if (g_connection_handle != HCI_CON_HANDLE_INVALID)
+        g_recovery_cycle_active = false;
+        if (g_connection_handle != HCI_CON_HANDLE_INVALID) {
             disconnect_current(false, false);
-        else {
+        } else {
             (void)gap_connect_cancel();
             g_state = BLE_MOUSE_CANCELLED;
         }
         break;
+
     default:
         break;
     }
