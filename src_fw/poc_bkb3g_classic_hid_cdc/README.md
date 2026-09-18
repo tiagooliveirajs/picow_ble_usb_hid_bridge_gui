@@ -84,12 +84,18 @@ Boot logs are buffered until a CDC terminal connects. If the device number is no
 
 ## Pairing test
 
+The tested keyboard is **Goldentec GT T1, code 40062**, advertised over Bluetooth as
+`BKB-3G` / `Bluetooth keyboard 3.0`.
+
+Before the next clean pairing test, erase the keyboard's own remembered Bluetooth
+devices by holding **FN+ESC for 5 seconds**. Then:
+
 1. Open the CDC log console first.
-2. Put the BKB-3G into pairing mode using FN+1, FN+2, or FN+3 until its LED blinks.
-3. Watch for `FOUND:`, `MATCH:`, `HID: CONNECTION OPEN`, and
-   `HID report descriptor`.
-4. If the log prints `PAIRING PASSKEY: NNNNNN`, type that six-digit number on the
-   BKB-3G and press Enter.
+2. Put the BKB-3G into pairing mode using FN+1, FN+2, or FN+3 until its white LED blinks.
+3. Watch for `FOUND:`, `MATCH:`, `BOND:`, `SSP:`, `HID: CONNECTION OPEN`,
+   and `HID report descriptor`.
+4. This model is configured for **Level 2 / MITM not required** bonding. A normal run
+   should not require a displayed passkey.
 5. When `POC READY` appears, open a text editor and test:
    - letters
    - Shift
