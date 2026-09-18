@@ -96,7 +96,7 @@ static void bond_target(const bd_addr_t address) {
     poc_logf("TARGET: %s", bd_addr_to_str(g_target_addr));
     poc_logf("BOND: starting dedicated Classic bonding before HID");
     poc_logf("BOND: stale local link key will be discarded by BTstack");
-    poc_logf("PAIRING: if a six-digit passkey appears, type it on the keyboard then Enter");
+    poc_logf("BOND: GT T1/40062 uses Level 2 bonding (MITM not required / Just Works capable)");
 
     // The BKB-3G rejects unauthenticated HID L2CAP channels with 0x66
     // (L2CAP_CONNECTION_RESPONSE_RESULT_REFUSED_SECURITY).  Dedicated bonding
@@ -104,9 +104,13 @@ static void bond_target(const bd_addr_t address) {
     // disconnects, and emits GAP_EVENT_DEDICATED_BONDING_COMPLETED.  Only then
     // do we open the HID Control/Interrupt channels.
     //
-    // Require MITM protection.  A keyboard can enter the displayed passkey and
-    // legacy pairing can still use the PIN callback below.
-    const int status = gap_dedicated_bonding(g_target_addr, 1);
+    // The Goldentec GT T1 / code 40062 manual describes first pairing as
+    // selecting "BKB-3G" and waiting for the white LED to stop blinking; it
+    // does not require a displayed passkey. Requiring MITM (Level 3) caused
+    // ERROR_CODE_INSUFFICIENT_SECURITY (0x2f) before association completed.
+    // Request Level 2 instead: authenticated/encrypted Classic link with
+    // bonding, but no MITM requirement.
+    const int status = gap_dedicated_bonding(g_target_addr, 0);
     if (status != ERROR_CODE_SUCCESS) {
         poc_logf("ERROR: gap_dedicated_bonding immediate status 0x%02x",
                  (unsigned)status);
@@ -405,6 +409,19 @@ static void packet_handler(uint8_t packet_type,
             break;
         }
 
+        case HCI_EVENT_IO_CAPABILITY_REQUEST:
+            poc_logf("SSP: controller requested our IO capability; local=NoInputNoOutput");
+            break;
+
+        case HCI_EVENT_IO_CAPABILITY_RESPONSE:
+            hci_event_io_capability_response_get_bd_addr(packet, event_addr);
+            poc_logf("SSP: remote IO capability from %s: io=0x%02x oob=0x%02x auth=0x%02x",
+                     bd_addr_to_str(event_addr),
+                     hci_event_io_capability_response_get_io_capability(packet),
+                     hci_event_io_capability_response_get_oob_data_present(packet),
+                     hci_event_io_capability_response_get_authentication_requirements(packet));
+            break;
+
         case HCI_EVENT_PIN_CODE_REQUEST:
             hci_event_pin_code_request_get_bd_addr(packet, event_addr);
             poc_logf("PAIRING: legacy PIN requested by %s", bd_addr_to_str(event_addr));
@@ -538,7 +555,15 @@ static void classic_hid_init(void) {
     hci_set_inquiry_mode(INQUIRY_MODE_RSSI_AND_EIR);
 
     gap_set_bondable_mode(1);
-    gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_ONLY);
+
+    // Goldentec GT T1 / 40062 ("BKB-3G") pairs without user-entered SSP
+    // credentials according to its user manual. Advertise no local I/O and
+    // allow Just Works / Level 2 bonding instead of forcing Passkey Entry.
+    gap_ssp_set_io_capability(SSP_IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
+    gap_ssp_set_authentication_requirement(
+        SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_GENERAL_BONDING);
+    gap_ssp_set_auto_accept(1);
+
     gap_set_local_name("RP2350 Classic HID POC 00:00:00:00:00:00");
     gap_discoverable_control(1);
 
