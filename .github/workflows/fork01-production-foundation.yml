@@ -44,12 +44,19 @@ jobs:
 
   pico2w-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Install ARM cross toolchain and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi ninja-build
+          arm-none-eabi-gcc --version
+          ninja --version
 
       - name: Checkout Pico SDK 2.2.0
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
