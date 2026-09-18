@@ -29,6 +29,7 @@ add_executable(bkb3g_classic_hid_cdc
 target_link_libraries(bkb3g_classic_hid_cdc PRIVATE
     pico_stdlib
     pico_multicore
+    pico_flash
     hardware_sync
     pico_unique_id
     tinyusb_device
