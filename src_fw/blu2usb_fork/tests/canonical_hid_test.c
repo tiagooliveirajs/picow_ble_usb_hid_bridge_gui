@@ -44,12 +44,12 @@ int main(void) {
     bool changed = false;
     canonical_hid_init(&state);
 
+    assert(CANONICAL_SOURCE_CAPACITY >= 16u);
     assert(CANONICAL_SOURCE_CLASSIC_KEYBOARD != CANONICAL_SOURCE_BLE_HOGP_KEYBOARD);
     assert(CANONICAL_SOURCE_BLE_HOGP_KEYBOARD != CANONICAL_SOURCE_BLE_HOGP_MOUSE);
     assert(CANONICAL_SOURCE_BLE_COMPOSITE_KEYBOARD != CANONICAL_SOURCE_BLE_COMPOSITE_MOUSE);
     assert(CANONICAL_SOURCE_SYNTHETIC_REMAP != CANONICAL_SOURCE_CLASSIC_KEYBOARD);
 
-    /* Ordered full snapshots preserve a short physical tap. */
     keyboard_input_snapshot_t in = snapshot(
         CANONICAL_SOURCE_CLASSIC_KEYBOARD, 0u, HID_KEY_A, 0u, 0u, 0u, 0u, 0u);
     assert(canonical_hid_apply_keyboard_snapshot(&state, &in, &report, &changed));
@@ -58,7 +58,6 @@ int main(void) {
     assert(canonical_hid_apply_keyboard_snapshot(&state, &in, &report, &changed));
     assert(changed && report.keycodes[0] == 0u);
 
-    /* Duplicate/reordered snapshots that produce the same aggregate are idempotent. */
     in = snapshot(CANONICAL_SOURCE_CLASSIC_KEYBOARD, 0u, HID_KEY_B, HID_KEY_A, 0u, 0u, 0u, 0u);
     assert(canonical_hid_apply_keyboard_snapshot(&state, &in, &report, &changed));
     assert(changed);
@@ -68,7 +67,6 @@ int main(void) {
     assert(canonical_hid_apply_keyboard_snapshot(&state, &in, &report, &changed));
     assert(!changed);
 
-    /* Physical + Synthetic Escape is one held target until the last owner releases. */
     canonical_hid_release_all(&state, &report);
     in = snapshot(CANONICAL_SOURCE_CLASSIC_KEYBOARD, 0u, HID_KEY_ESCAPE, 0u, 0u, 0u, 0u, 0u);
     assert(canonical_hid_apply_keyboard_snapshot(&state, &in, &report, &changed));
@@ -83,7 +81,6 @@ int main(void) {
     assert(canonical_hid_apply_keyboard_snapshot(&state, &in, &report, &changed));
     assert(changed && report.keycodes[0] == 0u);
 
-    /* Shared modifier ownership behaves the same way. */
     in = snapshot(CANONICAL_SOURCE_CLASSIC_KEYBOARD, MOD_LEFT_SHIFT, 0u, 0u, 0u, 0u, 0u, 0u);
     assert(canonical_hid_apply_keyboard_snapshot(&state, &in, &report, &changed));
     assert(changed && report.modifiers == MOD_LEFT_SHIFT);
@@ -97,7 +94,6 @@ int main(void) {
         &state, CANONICAL_SOURCE_BLE_HOGP_KEYBOARD, &report, &changed));
     assert(changed && report.modifiers == 0u);
 
-    /* Six distinct keys are representable; the seventh deterministically enters 6KRO error rollover. */
     canonical_hid_release_all(&state, &report);
     in = snapshot(CANONICAL_SOURCE_CLASSIC_KEYBOARD, 0u,
                   HID_KEY_A, HID_KEY_B, HID_KEY_C, HID_KEY_D, HID_KEY_E, HID_KEY_F);
@@ -115,7 +111,6 @@ int main(void) {
     assert(changed);
     assert_keys(&report, abcdef);
 
-    /* Source teardown releases only that source; another source remains held. */
     canonical_hid_release_all(&state, &report);
     in = snapshot(CANONICAL_SOURCE_CLASSIC_KEYBOARD, 0u, HID_KEY_A, 0u, 0u, 0u, 0u, 0u);
     assert(canonical_hid_apply_keyboard_snapshot(&state, &in, &report, &changed));
@@ -125,12 +120,17 @@ int main(void) {
         &state, CANONICAL_SOURCE_CLASSIC_KEYBOARD, &report, &changed));
     assert(changed && report.keycodes[0] == HID_KEY_B && report.keycodes[1] == 0u);
 
-    /* A Mouse source cannot alias or mutate Keyboard ownership. */
     in = snapshot(CANONICAL_SOURCE_BLE_HOGP_MOUSE, 0u, HID_KEY_C, 0u, 0u, 0u, 0u, 0u);
     assert(!canonical_hid_apply_keyboard_snapshot(&state, &in, &report, &changed));
     assert(!changed && report.keycodes[0] == HID_KEY_B);
     assert(canonical_hid_release_source(
         &state, CANONICAL_SOURCE_BLE_HOGP_MOUSE, &report, &changed));
+    assert(!changed && report.keycodes[0] == HID_KEY_B);
+
+    /* The complete 16-slot ownership capacity is valid for source teardown even
+     * before later gates assign transport kinds to the remaining IDs. */
+    assert(canonical_hid_release_source(
+        &state, CANONICAL_SOURCE_CAPACITY, &report, &changed));
     assert(!changed && report.keycodes[0] == HID_KEY_B);
 
     return 0;

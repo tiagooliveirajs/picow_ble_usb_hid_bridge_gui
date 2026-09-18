@@ -4,6 +4,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* G06 canonical ownership tracked up to 16 persistent sources. FORK-03
+ * reserves stable IDs for the source classes currently planned while keeping
+ * the full capacity available for later independently-owned producers. */
+#define CANONICAL_SOURCE_CAPACITY 16u
+
 typedef enum {
     CANONICAL_SOURCE_INVALID = 0u,
     CANONICAL_SOURCE_CLASSIC_KEYBOARD = 1u,
@@ -12,7 +17,7 @@ typedef enum {
     CANONICAL_SOURCE_BLE_COMPOSITE_KEYBOARD = 4u,
     CANONICAL_SOURCE_BLE_COMPOSITE_MOUSE = 5u,
     CANONICAL_SOURCE_SYNTHETIC_REMAP = 6u,
-    CANONICAL_SOURCE_MAX_ID = CANONICAL_SOURCE_SYNTHETIC_REMAP,
+    CANONICAL_SOURCE_MAX_RESERVED_ID = CANONICAL_SOURCE_SYNTHETIC_REMAP,
 } canonical_source_id_t;
 
 static inline bool canonical_source_is_keyboard(uint8_t source) {

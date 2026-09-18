@@ -41,7 +41,7 @@ static canonical_keyboard_report_t rebuild_keyboard_report(
     size_t unique_count = 0u;
     bool remote_rollover = false;
 
-    for (uint8_t source = 1u; source <= CANONICAL_SOURCE_MAX_ID; ++source) {
+    for (uint8_t source = 1u; source <= CANONICAL_SOURCE_CAPACITY; ++source) {
         if (!canonical_source_is_keyboard(source)) continue;
 
         const keyboard_input_snapshot_t *snapshot = &state->keyboard_sources[source];
@@ -87,7 +87,7 @@ static void publish_rebuild(
 void canonical_hid_init(canonical_hid_state_t *state) {
     if (state == NULL) return;
     memset(state, 0, sizeof(*state));
-    for (uint8_t source = 1u; source <= CANONICAL_SOURCE_MAX_ID; ++source) {
+    for (uint8_t source = 1u; source <= CANONICAL_SOURCE_CAPACITY; ++source) {
         state->keyboard_sources[source].source = source;
     }
 }
@@ -98,14 +98,13 @@ bool canonical_hid_apply_keyboard_snapshot(
     canonical_keyboard_report_t *report,
     bool *changed) {
     if (state == NULL || snapshot == NULL ||
+        snapshot->source > CANONICAL_SOURCE_CAPACITY ||
         !canonical_source_is_keyboard(snapshot->source)) {
         if (changed != NULL) *changed = false;
         return false;
     }
 
-    keyboard_input_snapshot_t normalized = *snapshot;
-    normalized.source = snapshot->source;
-    state->keyboard_sources[snapshot->source] = normalized;
+    state->keyboard_sources[snapshot->source] = *snapshot;
     publish_rebuild(state, report, changed);
     return true;
 }
@@ -116,7 +115,7 @@ bool canonical_hid_release_source(
     canonical_keyboard_report_t *report,
     bool *changed) {
     if (state == NULL || source == CANONICAL_SOURCE_INVALID ||
-        source > CANONICAL_SOURCE_MAX_ID) {
+        source > CANONICAL_SOURCE_CAPACITY) {
         if (changed != NULL) *changed = false;
         return false;
     }

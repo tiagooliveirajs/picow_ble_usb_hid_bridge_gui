@@ -20,6 +20,7 @@ required_sources = [
 ]
 for token in required_sources:
     assert token in sources, f"missing canonical source identity: {token}"
+assert "CANONICAL_SOURCE_CAPACITY 16u" in sources
 
 assert "canonical_hid_apply_keyboard_snapshot" in main
 assert "canonical_hid_release_source" in main
@@ -28,26 +29,21 @@ assert "usb_hid_replace_keyboard_state" in main
 assert "usb_hid_submit_keyboard" in main
 assert "keyboard_input_snapshot_t snapshot" in main
 
-# Transport adapters may parse remote reports, but never own TinyUSB.
 assert '"usb_hid.h"' not in classic
 assert "tud_" not in classic
-
-# Canonical ownership is transport-neutral and must not depend on BTstack or TinyUSB.
 assert "btstack" not in canonical.lower()
 assert "tud_" not in canonical
 assert '"tusb.h"' not in canonical
 
-# Normal release-sensitive overflow is source-aware, not an unconditional release-all.
 assert "g_release_source_mask" in bus
 assert "payload[0]" in bus
 assert "bridge_bus_take_release_sources" in bus
-assert "usb_hid_release_all();" in main  # retained only as unknown-source fallback
+assert "usb_hid_release_all();" in main
 
-# USB queue overflow no longer self-clears to global neutral inside submit.
 submit_start = usb.index("bool usb_hid_submit_keyboard")
 submit_end = usb.index("void usb_hid_task", submit_start)
 submit_body = usb[submit_start:submit_end]
 assert "usb_hid_release_keyboard" not in submit_body
 assert "keyboard_report_queue_push" in submit_body
 
-print("PASS: FORK-03 canonical ownership boundary and source-aware recovery contract")
+print("PASS: FORK-03 canonical ownership, 16-source capacity and source-aware recovery contract")

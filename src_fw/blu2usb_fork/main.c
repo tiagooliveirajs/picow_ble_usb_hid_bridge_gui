@@ -17,6 +17,7 @@
 #define CORE1_STACK_BYTES 8192u
 
 _Static_assert(CORE1_STACK_BYTES >= 8192u, "Classic/dual-mode BT runtime requires at least the accepted 8 KiB Core1 stack");
+_Static_assert(CANONICAL_SOURCE_CAPACITY >= 16u, "G06 canonical ownership capacity must not regress below 16 sources");
 
 static uint32_t g_core1_stack[CORE1_STACK_BYTES / sizeof(uint32_t)]
     __attribute__((aligned(8)));
@@ -76,7 +77,7 @@ static void recover_dropped_bt_sources(void) {
     const uint32_t release_sources = bridge_bus_take_release_sources();
     bool keyboard_recovery_required = false;
 
-    for (uint8_t source = 1u; source <= CANONICAL_SOURCE_MAX_ID; ++source) {
+    for (uint8_t source = 1u; source <= CANONICAL_SOURCE_CAPACITY; ++source) {
         if ((release_sources & (UINT32_C(1) << source)) == 0u) continue;
 
         canonical_keyboard_report_t ignored_report;
@@ -107,9 +108,6 @@ static void recover_dropped_bt_sources(void) {
 static void application_service(void) {
     bridge_message_t message;
 
-    /* Drain ordered full-state snapshots first. If the producer overflowed,
-     * source-specific teardown runs afterwards so older queued state cannot
-     * re-assert a source whose newest release was dropped. */
     while (bridge_bus_take_bt_event(&message)) {
         if (message.channel == BRIDGE_CHANNEL_INPUT &&
             message.type == BT_EVENT_KEYBOARD_SNAPSHOT) {
