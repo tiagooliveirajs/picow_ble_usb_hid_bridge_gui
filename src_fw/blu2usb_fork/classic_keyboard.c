@@ -352,25 +352,24 @@ static void handle_hid_report(uint8_t *packet) {
     }
 }
 
-static bool incoming_connection_matches_target(uint8_t *packet, uint16_t size) {
-    if (!g_target_valid || size < 11u) return false;
+static bool incoming_connection_matches_target(uint8_t *packet) {
+    if (!g_target_valid) return false;
     bd_addr_t incoming_addr;
-    reverse_bd_addr(&packet[5], incoming_addr);
+    hid_subevent_incoming_connection_get_address(packet, incoming_addr);
     return bd_addr_cmp(incoming_addr, g_target_addr) == 0;
 }
 
 static void handle_hid_meta(uint8_t *packet, uint16_t size) {
+    (void)size;
     switch (hci_event_hid_meta_get_subevent_code(packet)) {
         case HID_SUBEVENT_INCOMING_CONNECTION: {
             const uint16_t cid = hid_subevent_incoming_connection_get_hid_cid(packet);
-            const uint8_t status = hid_subevent_incoming_connection_get_status(packet);
             const bool state_allows_incoming =
                 g_state == CLASSIC_BONDING ||
                 g_state == CLASSIC_WAITING_FOR_HID_START ||
                 g_state == CLASSIC_CONNECTING;
-            if (status != ERROR_CODE_SUCCESS || !state_allows_incoming ||
-                !incoming_connection_matches_target(packet, size)) {
-                if (status == ERROR_CODE_SUCCESS) hid_host_decline_connection(cid);
+            if (!state_allows_incoming || !incoming_connection_matches_target(packet)) {
+                hid_host_decline_connection(cid);
                 break;
             }
 
