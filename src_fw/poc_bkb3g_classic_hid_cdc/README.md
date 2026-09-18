@@ -5,6 +5,10 @@ This branch contains a deliberately small diagnostic POC derived from the reposi
 
 ## Goal
 
+**Physical acceptance recorded:** the operator paired the GT T1 and typed a/s/d
+on 2026-09-18 with `b04aaf1`. See [the durable solution and evidence record](../../docs/BKB3G_ACCEPTED_SOLUTION.md)
+for the exact sequencing invariant, log excerpts, source SHA and acceptance limits.
+
 Prove this path on Raspberry Pi Pico 2 W / RP2350:
 
 ```text
@@ -155,7 +159,9 @@ duplicate/foreign/failed completions, incoming takeover, immediate connect error
 and diagnostic behavior. A scratch-only negative control restoring synchronous
 startup fails the old-ACL invariant. These are host tests with mocked hardware
 APIs; they do not execute the controller or prove physical compatibility.
-No full ARM firmware build or hardware test was performed for this candidate.
+The initial implementation run did not build ARM firmware or test hardware.
+The operator subsequently compiled it locally and confirmed pairing and a/s/d;
+the linked acceptance record supersedes the initial pending status for that scope.
 
 Optional host regression test (from this directory):
 
