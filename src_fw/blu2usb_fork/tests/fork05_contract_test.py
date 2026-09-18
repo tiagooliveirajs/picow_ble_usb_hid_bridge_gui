@@ -2,7 +2,7 @@
 from pathlib import Path
 import sys
 root=Path(sys.argv[1] if len(sys.argv)>1 else '.').resolve()
-model=(root/'ui_model.c').read_text(); renderer=(root/'ui_renderer.h').read_text(); hat=(root/'hat.h').read_text(); lcd=(root/'st7789_pico.c').read_text(); runtime=(root/'ui_runtime.c').read_text(); main=(root/'main.c').read_text(); cmake=(root/'CMakeLists.txt').read_text(); bt=(root/'bt_runtime.c').read_text(); mouse=(root/'ble_mouse.c').read_text(); usb=(root/'usb_hid.c').read_text()
+model=(root/'ui_model.c').read_text(); renderer=(root/'ui_renderer.h').read_text(); hat=(root/'hat.h').read_text(); lcd=(root/'st7789_pico.c').read_text(); runtime=(root/'ui_runtime.c').read_text(); main=(root/'main.c').read_text(); cmake=(root/'CMakeLists.txt').read_text(); bt=(root/'bt_runtime.c').read_text(); mouse=(root/'ble_mouse.c').read_text(); classic=(root/'classic_keyboard.c').read_text(); usb=(root/'usb_hid.c').read_text()
 assert 'PRESS TO LEARN A KEY' in model
 assert 'KEY X: HELP' in model and 'KEY C: HELP' not in model
 assert 'GO TO HOME' not in model and 'JOY UP / DOWN: SELECT' in model and 'ANY KEY: BACK' in model
@@ -25,4 +25,24 @@ assert 'usb_hid_submit_mouse' in main and 'usb_hid_submit_mouse' in usb
 assert 'tud_disconnect(' not in main + usb and 'tud_connect(' not in main + usb
 assert 'ble_mouse.c ble_mouse_parser.c' in cmake and 'pico_btstack_make_gatt_header' in cmake
 assert 'hardware_spi' in cmake and 'pico_enable_stdio_usb(blu2usb_fork_foundation 0)' in cmake
-print('PASS: FORK-05 corrected Learn boot + BLE Mouse reconnect/USB path contract')
+
+# User-directed live-state UX amendment for the current gate.
+for text in [' MOUSE PAIRED',' KEYBOARD PAIRED','KEYBOARD CONNECTED','KEYBOARD PAIRED']:
+    assert text in runtime, text
+assert 'connected ? " MOUSE PAIRED" : " PAIR MOUSE"' in runtime
+assert 'g_keyboard_connected ? " KEYBOARD PAIRED" : " PAIR KEYBOARD"' in runtime
+assert 'if (!g_keyboard_connected) send_bt_command(BT_COMMAND_CLASSIC_RETRY);' in runtime
+assert 'BLU2USB_UI_TONE_CURRENT' in runtime and 'BLU2USB_UI_TONE_EMPHASIZED' in runtime
+
+# Composite transport is still FORK-12, but its future paired labels/status are
+# already frozen in the projection code without claiming a working transport.
+assert 'g_composite_connected ? " COMPOSITE PAIRED" : " PAIR COMPOSITE"' in runtime
+assert 'COMPOSITE CONNECTED' in runtime
+assert 'Composite transport is a FORK-12 feature' in runtime
+
+# Current-session Classic reconnect and stale-key recovery are regressions, not
+# FORK-11 preferred/cold-boot persistence work.
+assert 'state_allows_known_target_reconnect' in classic
+assert 'gap_drop_link_key_for_bd_addr(g_target_addr)' in classic
+
+print('PASS: FORK-05 Learn boot + live paired UI + Mouse/Classic reconnect remediation contract')

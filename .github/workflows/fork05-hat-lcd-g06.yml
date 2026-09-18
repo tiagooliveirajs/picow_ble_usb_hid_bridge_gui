@@ -19,14 +19,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Run corrected HAT LCD Mouse and inherited host tests
+      - name: Run HAT LCD UI reconnect and inherited host tests
         run: bash src_fw/blu2usb_fork/tests/run_host_tests.sh
-      - name: Verify accepted Classic canonical descriptors and persistence remain unchanged
+      - name: Verify accepted canonical descriptors persistence and Classic parser remain unchanged
         run: |
           git diff --exit-code 784cea52f19f98f920e342874cb1ca69139cb18d HEAD -- \
             src_fw/blu2usb_fork/bridge_bus.c src_fw/blu2usb_fork/bridge_bus.h \
             src_fw/blu2usb_fork/canonical_hid.c src_fw/blu2usb_fork/canonical_hid.h src_fw/blu2usb_fork/canonical_source.h \
-            src_fw/blu2usb_fork/classic_keyboard.c src_fw/blu2usb_fork/classic_keyboard.h \
             src_fw/blu2usb_fork/classic_keyboard_report.c src_fw/blu2usb_fork/classic_keyboard_report.h \
             src_fw/blu2usb_fork/keyboard_input.h src_fw/blu2usb_fork/keyboard_report_queue.c src_fw/blu2usb_fork/keyboard_report_queue.h \
             src_fw/blu2usb_fork/storage_owner.c src_fw/blu2usb_fork/storage_owner.h \
@@ -40,7 +39,7 @@ jobs:
           ref: 501e6d2b86e6c92bfb9c390bcf55709938e25ac1
           path: btstack
           persist-credentials: false
-      - name: Re-run accepted production Classic adapter tests
+      - name: Re-run production Classic deferred-HID and reconnect tests
         env:
           BTSTACK_ROOT: ${{ github.workspace }}/btstack
         run: bash src_fw/blu2usb_fork/tests/run_classic_host_tests.sh
@@ -85,15 +84,15 @@ jobs:
       - name: Record artifact metadata
         run: |
           test -s build-fork05/blu2usb_fork_foundation.uf2
-          cp build-fork05/blu2usb_fork_foundation.uf2 build-fork05/blu2usb_fork05_mouse_learn_fix.uf2
-          sha256sum build-fork05/blu2usb_fork05_mouse_learn_fix.uf2 | tee build-fork05/blu2usb_fork05_mouse_learn_fix.uf2.sha256
-          arm-none-eabi-size build-fork05/blu2usb_fork_foundation.elf | tee build-fork05/blu2usb_fork05_mouse_learn_fix.size.txt
+          cp build-fork05/blu2usb_fork_foundation.uf2 build-fork05/blu2usb_fork05_reconnect_ui_fix.uf2
+          sha256sum build-fork05/blu2usb_fork05_reconnect_ui_fix.uf2 | tee build-fork05/blu2usb_fork05_reconnect_ui_fix.uf2.sha256
+          arm-none-eabi-size build-fork05/blu2usb_fork_foundation.elf | tee build-fork05/blu2usb_fork05_reconnect_ui_fix.size.txt
       - name: Upload Pico 2 W corrected FORK-05 candidate
         uses: actions/upload-artifact@v4
         with:
-          name: fork05-blu2usb-pico2w-mouse-learn-fix
+          name: fork05-blu2usb-pico2w-reconnect-ui-fix
           if-no-files-found: error
           path: |
-            build-fork05/blu2usb_fork05_mouse_learn_fix.uf2
-            build-fork05/blu2usb_fork05_mouse_learn_fix.uf2.sha256
-            build-fork05/blu2usb_fork05_mouse_learn_fix.size.txt
+            build-fork05/blu2usb_fork05_reconnect_ui_fix.uf2
+            build-fork05/blu2usb_fork05_reconnect_ui_fix.uf2.sha256
+            build-fork05/blu2usb_fork05_reconnect_ui_fix.size.txt

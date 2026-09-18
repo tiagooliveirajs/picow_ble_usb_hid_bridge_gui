@@ -18,4 +18,16 @@ for required in ['HID_USAGE_MOUSE 0x02u','HID_USAGE_AC_PAN 0x0238u','report_len 
     assert required in parser, required
 assert 'latch_release_for_failed_message' in bridge
 assert 'canonical_source_from_input_prefix' in bridge
-print('PASS: FORK-05 BLE Mouse G06 reconnect/parser/coexistence source contract')
+
+# A late HIDS service-disconnected callback may arrive after the HCI disconnect
+# handler has already started reconnect/scan. It must not overwrite that state
+# with CANCELLED.
+hids_close = mouse.split('case GATTSERVICE_SUBEVENT_HID_SERVICE_DISCONNECTED:',1)[1].split('case GATTSERVICE_SUBEVENT_HID_REPORT:',1)[0]
+assert 'g_state == BLE_MOUSE_READY' in hids_close
+assert 'disconnect_current(true, false)' in hids_close
+assert 'g_state == BLE_MOUSE_SECURING' in hids_close
+assert 'g_state == BLE_MOUSE_CONNECTING_HIDS' in hids_close
+assert 'disconnect_and_rescan()' in hids_close
+assert 'g_state != BLE_MOUSE_DISCONNECTING' not in hids_close
+
+print('PASS: FORK-05 BLE Mouse G06 reconnect/parser/coexistence + stale-HIDS-disconnect recovery contract')

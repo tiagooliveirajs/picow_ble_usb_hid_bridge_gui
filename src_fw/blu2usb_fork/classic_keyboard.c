@@ -52,6 +52,7 @@ static discovered_device_t g_devices[MAX_DISCOVERED_DEVICES];
 static uint8_t g_device_count;
 static bd_addr_t g_target_addr;
 static bool g_target_valid;
+static bool g_stale_key_recovery_attempted;
 static volatile uint16_t g_hid_host_cid;
 static volatile bool g_hid_descriptor_available;
 static hci_con_handle_t g_target_acl_handle = HCI_CON_HANDLE_INVALID;
@@ -190,6 +191,10 @@ static void start_inquiry(void) {
 }
 
 static void bond_target(const bd_addr_t address) {
+    const bool target_changed = !g_target_valid ||
+        bd_addr_cmp(address, g_target_addr) != 0;
+    if (target_changed) g_stale_key_recovery_attempted = false;
+
     memcpy(g_target_addr, address, sizeof(bd_addr_t));
     g_target_valid = true;
     gap_inquiry_stop();
@@ -211,6 +216,7 @@ static void connect_target(const bd_addr_t address) {
     }
 
     gap_inquiry_stop();
+    btstack_run_loop_remove_timer(&g_retry_timer);
     g_state = CLASSIC_CONNECTING;
     g_hid_descriptor_available = false;
     publish_status(BT_EVENT_CLASSIC_CONNECTING);
@@ -246,10 +252,20 @@ static void handle_bonding_complete(uint8_t *packet) {
 
     if (status != ERROR_CODE_SUCCESS) {
         publish_neutral_snapshot();
-        schedule_retry(RETRY_DELAY_MS);
+        /* A reset Keyboard can forget its Classic link key while Pico keeps
+         * the old one in BTstack TLV. Drop that one target key once, then let
+         * the normal bounded discovery/bonding path establish a fresh key. */
+        if (!g_stale_key_recovery_attempted) {
+            gap_drop_link_key_for_bd_addr(g_target_addr);
+            g_stale_key_recovery_attempted = true;
+            schedule_retry(MANUAL_RETRY_DELAY_MS);
+        } else {
+            schedule_retry(RETRY_DELAY_MS);
+        }
         return;
     }
 
+    g_stale_key_recovery_attempted = false;
     btstack_run_loop_remove_timer(&g_phase_timer);
     g_state = CLASSIC_WAITING_FOR_HID_START;
     g_start_hid_callback.callback = start_hid_after_bonding;
@@ -359,22 +375,33 @@ static bool incoming_connection_matches_target(uint8_t *packet) {
     return bd_addr_cmp(incoming_addr, g_target_addr) == 0;
 }
 
+static bool state_allows_known_target_reconnect(void) {
+    return g_state == CLASSIC_BONDING ||
+           g_state == CLASSIC_WAITING_FOR_HID_START ||
+           g_state == CLASSIC_CONNECTING ||
+           g_state == CLASSIC_RETRY_WAIT ||
+           g_state == CLASSIC_INQUIRY ||
+           g_state == CLASSIC_RESOLVING_NAMES;
+}
+
 static void handle_hid_meta(uint8_t *packet, uint16_t size) {
     (void)size;
     switch (hci_event_hid_meta_get_subevent_code(packet)) {
         case HID_SUBEVENT_INCOMING_CONNECTION: {
             const uint16_t cid = hid_subevent_incoming_connection_get_hid_cid(packet);
-            const bool state_allows_incoming =
-                g_state == CLASSIC_BONDING ||
-                g_state == CLASSIC_WAITING_FOR_HID_START ||
-                g_state == CLASSIC_CONNECTING;
-            if (!state_allows_incoming || !incoming_connection_matches_target(packet)) {
+            if (!state_allows_known_target_reconnect() ||
+                !incoming_connection_matches_target(packet)) {
                 hid_host_decline_connection(cid);
                 break;
             }
 
+            /* A bonded Keyboard normally reconnects by initiating HID itself.
+             * Stop discovery/retry work and accept the known target directly. */
+            gap_inquiry_stop();
             btstack_run_loop_remove_timer(&g_phase_timer);
+            btstack_run_loop_remove_timer(&g_retry_timer);
             g_hid_host_cid = cid;
+            g_hid_descriptor_available = false;
             g_state = CLASSIC_CONNECTING;
             publish_status(BT_EVENT_CLASSIC_CONNECTING);
             arm_phase_timeout(HID_CONNECT_TIMEOUT_MS);
@@ -407,6 +434,7 @@ static void handle_hid_meta(uint8_t *packet, uint16_t size) {
                 break;
             }
             g_hid_descriptor_available = true;
+            g_stale_key_recovery_attempted = false;
             g_state = CLASSIC_READY;
             btstack_run_loop_remove_timer(&g_phase_timer);
             publish_status(BT_EVENT_CLASSIC_READY);
@@ -418,8 +446,12 @@ static void handle_hid_meta(uint8_t *packet, uint16_t size) {
             break;
 
         case HID_SUBEVENT_CONNECTION_CLOSED:
-            publish_neutral_snapshot();
-            schedule_retry(RETRY_DELAY_MS);
+            /* Ignore a late close from the previous HID session once retry,
+             * discovery or fresh bonding has already started. */
+            if (g_state == CLASSIC_CONNECTING || g_state == CLASSIC_READY) {
+                publish_neutral_snapshot();
+                schedule_retry(RETRY_DELAY_MS);
+            }
             break;
 
         case HID_SUBEVENT_SET_PROTOCOL_RESPONSE:
@@ -514,6 +546,7 @@ static void packet_handler(uint8_t packet_type,
 void classic_keyboard_init(void) {
     clear_target_runtime();
     g_target_valid = false;
+    g_stale_key_recovery_attempted = false;
     g_device_count = 0u;
     g_state = CLASSIC_WAITING_FOR_STACK;
 
@@ -551,6 +584,7 @@ void classic_keyboard_handle_command(uint16_t command_type) {
         case BT_COMMAND_CLASSIC_RETRY:
             stop_active_transport();
             publish_neutral_snapshot();
+            g_stale_key_recovery_attempted = false;
             schedule_retry(MANUAL_RETRY_DELAY_MS);
             break;
 

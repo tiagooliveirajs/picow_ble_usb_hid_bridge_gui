@@ -261,8 +261,15 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
         break;
     }
     case GATTSERVICE_SUBEVENT_HID_SERVICE_DISCONNECTED:
-        if (g_state != BLE_MOUSE_DISCONNECTING)
-            disconnect_current(g_state == BLE_MOUSE_READY, false);
+        /* BTstack can deliver this service-level close after the HCI close has
+         * already moved us into reconnect/scan. Never let that stale event
+         * overwrite the new recovery state with CANCELLED. */
+        if (g_state == BLE_MOUSE_READY) {
+            disconnect_current(true, false);
+        } else if (g_state == BLE_MOUSE_SECURING ||
+                   g_state == BLE_MOUSE_CONNECTING_HIDS) {
+            disconnect_and_rescan();
+        }
         break;
     case GATTSERVICE_SUBEVENT_HID_REPORT: {
         if (g_state != BLE_MOUSE_READY) break;

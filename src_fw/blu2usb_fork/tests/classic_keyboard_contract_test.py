@@ -20,6 +20,8 @@ assert "btstack_run_loop_execute_on_main_thread(&g_start_hid_callback)" in class
 bond_body = classic.split("static void handle_bonding_complete", 1)[1].split("static void request_next_remote_name", 1)[0]
 assert "hid_host_connect(" not in bond_body
 assert "btstack_run_loop_execute_on_main_thread" in bond_body
+assert "gap_drop_link_key_for_bd_addr(g_target_addr)" in bond_body
+assert "g_stale_key_recovery_attempted" in bond_body
 
 deferred_body = classic.split("static void start_hid_after_bonding", 1)[1].split("static void handle_bonding_complete", 1)[0]
 assert "connect_target(g_target_addr)" in deferred_body
@@ -37,6 +39,22 @@ assert "REMOTE_NAME_TIMEOUT_MS 5000u" in classic
 assert "BT_COMMAND_CLASSIC_CANCEL" in runtime
 assert "BT_COMMAND_CLASSIC_RETRY" in runtime
 
+# Same-session bonded reconnect: a known Keyboard may initiate HID while the
+# host is retrying/inquiry/name-resolution. It must not be declined merely
+# because discovery is active.
+reconnect_body = classic.split("static bool state_allows_known_target_reconnect", 1)[1].split("static void handle_hid_meta", 1)[0]
+for state in ("CLASSIC_RETRY_WAIT", "CLASSIC_INQUIRY", "CLASSIC_RESOLVING_NAMES"):
+    assert state in reconnect_body, state
+incoming_body = classic.split("case HID_SUBEVENT_INCOMING_CONNECTION", 1)[1].split("case HID_SUBEVENT_CONNECTION_OPENED", 1)[0]
+assert "state_allows_known_target_reconnect()" in incoming_body
+assert "btstack_run_loop_remove_timer(&g_retry_timer)" in incoming_body
+assert "hid_host_accept_connection(cid, HID_PROTOCOL_MODE_REPORT)" in incoming_body
+
+# A late close from the old HID session must not restart discovery after a new
+# pairing/reconnect phase has already taken ownership of the state machine.
+closed_body = classic.split("case HID_SUBEVENT_CONNECTION_CLOSED", 1)[1].split("case HID_SUBEVENT_SET_PROTOCOL_RESPONSE", 1)[0]
+assert "g_state == CLASSIC_CONNECTING || g_state == CLASSIC_READY" in closed_body
+
 assert "KEYBOARD_SOURCE_CLASSIC_HID" in keyboard_input
 assert "KEYBOARD_SOURCE_BLE_HOGP" in keyboard_input
 assert "KEYBOARD_SOURCE_BLE_COMPOSITE" in keyboard_input
@@ -44,4 +62,4 @@ assert "BT_EVENT_KEYBOARD_SNAPSHOT" in main
 assert "pico_enable_stdio_usb(blu2usb_fork_foundation 0)" in cmake
 assert "pico_enable_stdio_uart(blu2usb_fork_foundation 0)" in cmake
 
-print("PASS: FORK-02 Classic adapter contract, deferred HID, bounded recovery and transport-neutral Keyboard facade")
+print("PASS: FORK-02 Classic deferred HID + FORK-05 same-session reconnect/stale-key recovery contract")
