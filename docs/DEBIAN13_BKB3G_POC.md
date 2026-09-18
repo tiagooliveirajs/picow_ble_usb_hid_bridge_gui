@@ -309,10 +309,14 @@ BTSTACK: HCI_STATE_WORKING
 SCAN: Bluetooth Classic inquiry started
 ```
 
-## 11. Test BKB-3G pairing
+## 11. Test Goldentec GT T1 / code 40062 pairing
 
-Use a keyboard slot that you can dedicate to this POC. This avoids a stale bond
-from an older firmware image.
+This keyboard advertises as `BKB-3G` / `Bluetooth keyboard 3.0`.
+
+For the cleanest test, first erase the keyboard's own saved Bluetooth memories:
+hold **FN+ESC for 5 seconds**. This is the reset procedure documented for the GT T1.
+
+Then:
 
 1. Open the CDC console.
 2. Put the keyboard into pairing mode with `FN+1`, `FN+2`, or `FN+3`
@@ -324,23 +328,21 @@ Useful states:
 ```text
 FOUND:
 MATCH:
-CONNECT:
+BOND:
+SSP:
 PAIRING:
+CONNECT:
 HID: CONNECTION OPEN
 HID report descriptor
 POC READY
 ```
 
-If the log says:
+The current POC intentionally requests **Security Level 2 / MITM not required** and
+advertises local SSP capability as `NoInputNoOutput`. This matches the GT T1's
+documented first-pairing flow, which does not instruct the user to enter a PIN or passkey.
 
-```text
-PAIRING PASSKEY: 123456
-```
-
-type `123456` on the Bluetooth keyboard itself and press Enter.
-
-For legacy PIN pairing, the POC answers `0000` and tells you in the log if the
-keyboard should also receive `0000 + Enter`.
+The new `SSP:` lines also print the remote keyboard's IO capability and
+authentication requirements so a remaining mismatch can be diagnosed precisely.
 
 After `POC READY`, open Mousepad or another text editor and test:
 
