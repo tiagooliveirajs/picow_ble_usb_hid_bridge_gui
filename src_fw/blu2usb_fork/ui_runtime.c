@@ -34,7 +34,8 @@ static void clear_row(blu2usb_ui_frame_t *frame, uint8_t row) {
     }
 }
 
-static void replace_row(blu2usb_ui_frame_t *frame, uint8_t row, const char *text, blu2usb_ui_tone_t tone) {
+static void replace_row(blu2usb_ui_frame_t *frame, uint8_t row,
+                        const char *text, blu2usb_ui_tone_t tone) {
     clear_row(frame, row);
     (void)blu2usb_ui_frame_set_text(frame, row, 0u, text, tone);
 }
@@ -48,9 +49,7 @@ static void project_keyboard_runtime(blu2usb_ui_frame_t *frame) {
         replace_row(frame, 4u, "NOT CONNECTED", BLU2USB_UI_TONE_STATIC);
         return;
     }
-
     if (g_ux.screen != BLU2USB_SCREEN_PAIR_KEYBOARD) return;
-
     switch (g_keyboard_phase) {
     case KEYBOARD_UI_BONDING:
         replace_row(frame,1u,"PAIRING KEYBOARD",BLU2USB_UI_TONE_STATIC);
@@ -101,7 +100,7 @@ static bool render_state(void) {
     return blu2usb_renderer_render(&g_display, &frame);
 }
 
-static void send_classic_command(uint16_t type) {
+static void send_bt_command(uint16_t type) {
     const bridge_message_t message = {
         .channel = BRIDGE_CHANNEL_CONTROL,
         .type = type,
@@ -110,18 +109,22 @@ static void send_classic_command(uint16_t type) {
     (void)bridge_bus_send_app_command(&message);
 }
 
-static void handle_ux_command(blu2usb_ux_command_t command, blu2usb_screen_id_t previous_screen) {
+static void handle_ux_command(blu2usb_ux_command_t command,
+                              blu2usb_screen_id_t previous_screen) {
     switch (command.kind) {
+    case BLU2USB_UX_COMMAND_PAIR_MOUSE:
+        send_bt_command(BT_COMMAND_BLE_MOUSE_RETRY);
+        break;
     case BLU2USB_UX_COMMAND_PAIR_KEYBOARD:
-        send_classic_command(BT_COMMAND_CLASSIC_RETRY);
+        send_bt_command(BT_COMMAND_CLASSIC_RETRY);
         break;
     case BLU2USB_UX_COMMAND_RETRY:
-        if (previous_screen == BLU2USB_SCREEN_PAIR_KEYBOARD)
-            send_classic_command(BT_COMMAND_CLASSIC_RETRY);
+        if (previous_screen == BLU2USB_SCREEN_PAIR_MOUSE)
+            send_bt_command(BT_COMMAND_BLE_MOUSE_RETRY);
+        else if (previous_screen == BLU2USB_SCREEN_PAIR_KEYBOARD)
+            send_bt_command(BT_COMMAND_CLASSIC_RETRY);
         break;
     case BLU2USB_UX_COMMAND_CUSTOM_SET_TARGET:
-        /* FORK-05 owns only the UI draft projection. Durable Custom state and
-         * runtime application are deliberately deferred to FORK-07. */
         blu2usb_ux_set_custom_target(&g_ux, command.source, command.target);
         break;
     default:
@@ -131,6 +134,9 @@ static void handle_ux_command(blu2usb_ux_command_t command, blu2usb_screen_id_t 
 
 bool ui_runtime_init(void) {
     blu2usb_ux_init(&g_ux);
+    /* Physical correction: first visible page is the didactic Learn screen. */
+    g_ux.screen = BLU2USB_SCREEN_LEARN_KEYS;
+    g_ux.selection = 0u;
     blu2usb_ux_set_mouse_connected(false);
     blu2usb_hat_pico_init();
     if (!blu2usb_st7789_pico_init(&g_display)) return false;
@@ -156,6 +162,18 @@ void ui_runtime_on_bt_event(uint16_t event_type) {
         g_keyboard_connected = false; g_keyboard_phase = KEYBOARD_UI_RETRYING; break;
     case BT_EVENT_CLASSIC_CANCELLED:
         g_keyboard_connected = false; g_keyboard_phase = KEYBOARD_UI_CANCELLED; break;
+    case BT_EVENT_BLE_MOUSE_SCANNING:
+    case BT_EVENT_BLE_MOUSE_CONNECTING:
+        blu2usb_ux_set_mouse_connected(false); break;
+    case BT_EVENT_BLE_MOUSE_READY:
+        blu2usb_ux_set_mouse_connected(true);
+        if (g_ux.screen == BLU2USB_SCREEN_PAIR_MOUSE) {
+            g_ux.screen = BLU2USB_SCREEN_MOUSE_SAVED;
+            g_ux.selection = 0u;
+        }
+        break;
+    case BT_EVENT_BLE_MOUSE_DISCONNECTED:
+        blu2usb_ux_set_mouse_connected(false); break;
     default:
         return;
     }
@@ -164,17 +182,19 @@ void ui_runtime_on_bt_event(uint16_t event_type) {
 
 void ui_runtime_task(void) {
     if (!g_initialized) return;
-
     blu2usb_hat_pico_task();
     blu2usb_hat_event_t event;
     while (blu2usb_hat_pico_poll_event(&event)) {
         const bool was_locked = blu2usb_interaction_is_locked(&g_ux.interaction);
         const blu2usb_screen_id_t previous_screen = g_ux.screen;
-        const blu2usb_ux_command_t command = blu2usb_ux_input(&g_ux, event.control, event.pressed);
+        const blu2usb_ux_command_t command =
+            blu2usb_ux_input(&g_ux, event.control, event.pressed);
 
-        if (!event.pressed && previous_screen == BLU2USB_SCREEN_PAIR_KEYBOARD &&
-            event.control == BLU2USB_CONTROL_KEY_B) {
-            send_classic_command(BT_COMMAND_CLASSIC_CANCEL);
+        if (!event.pressed && event.control == BLU2USB_CONTROL_KEY_B) {
+            if (previous_screen == BLU2USB_SCREEN_PAIR_KEYBOARD)
+                send_bt_command(BT_COMMAND_CLASSIC_CANCEL);
+            else if (previous_screen == BLU2USB_SCREEN_PAIR_MOUSE)
+                send_bt_command(BT_COMMAND_BLE_MOUSE_CANCEL);
         }
         handle_ux_command(command, previous_screen);
 
@@ -190,7 +210,6 @@ void ui_runtime_task(void) {
             (void)render_state();
         }
     }
-
     if (g_dirty && !blu2usb_interaction_is_locked(&g_ux.interaction))
         (void)render_state();
 }

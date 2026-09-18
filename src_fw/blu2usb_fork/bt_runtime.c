@@ -3,10 +3,12 @@
 #include <stdbool.h>
 
 #include "btstack.h"
+#include "fork05_hog_host.h"
 #include "pico/cyw43_arch.h"
 #include "pico/flash.h"
 #include "pico/stdlib.h"
 
+#include "ble_mouse.h"
 #include "bridge_bus.h"
 #include "classic_keyboard.h"
 
@@ -26,37 +28,35 @@ static void publish_status(uint16_t type) {
 
 static void command_poll(btstack_timer_source_t *timer) {
     bridge_message_t message;
-
     while (bridge_bus_take_app_command(&message)) {
         if (message.channel != BRIDGE_CHANNEL_CONTROL) continue;
-
         switch (message.type) {
-            case BT_COMMAND_PING:
-                publish_status(BT_EVENT_COMMAND_ACK);
-                break;
-            case BT_COMMAND_CLASSIC_CANCEL:
-            case BT_COMMAND_CLASSIC_RETRY:
-                classic_keyboard_handle_command(message.type);
-                break;
-            default:
-                break;
+        case BT_COMMAND_PING:
+            publish_status(BT_EVENT_COMMAND_ACK);
+            break;
+        case BT_COMMAND_CLASSIC_CANCEL:
+        case BT_COMMAND_CLASSIC_RETRY:
+            classic_keyboard_handle_command(message.type);
+            break;
+        case BT_COMMAND_BLE_MOUSE_CANCEL:
+        case BT_COMMAND_BLE_MOUSE_RETRY:
+            ble_mouse_handle_command(message.type);
+            break;
+        default:
+            break;
         }
     }
-
     btstack_run_loop_set_timer(timer, COMMAND_POLL_INTERVAL_MS);
     btstack_run_loop_add_timer(timer);
 }
 
-static void packet_handler(
-    uint8_t packet_type,
-    uint16_t channel,
-    uint8_t *packet,
-    uint16_t size) {
+static void packet_handler(uint8_t packet_type,
+                           uint16_t channel,
+                           uint8_t *packet,
+                           uint16_t size) {
     (void)channel;
     (void)size;
-
     if (packet_type != HCI_EVENT_PACKET) return;
-
     if (hci_event_packet_get_type(packet) == BTSTACK_EVENT_STATE &&
         btstack_event_state_get_state(packet) == HCI_STATE_WORKING) {
         publish_status(BT_EVENT_STACK_WORKING);
@@ -65,15 +65,19 @@ static void packet_handler(
 }
 
 static void runtime_init(void) {
-    // One dual-mode stack owner on Core1. Profile adapters register with this
-    // lifecycle; they never initialize CYW43, L2CAP or HCI power themselves.
+    /* Exactly one dual-mode stack owner on Core1. BLE Mouse and Classic
+     * Keyboard are profile adapters inside this lifecycle; neither initializes
+     * CYW43/HCI nor powers the controller independently. */
     l2cap_init();
     sm_init();
     gatt_client_init();
+    att_server_init(profile_data, NULL, NULL);
     sdp_init();
 
+    /* Accepted G06 HOGP Mouse security contract. Classic SSP is configured
+     * separately below and keeps its accepted Level-2/Just-Works path. */
     sm_set_io_capabilities(IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
-    sm_set_authentication_requirements(SM_AUTHREQ_BONDING);
+    sm_set_authentication_requirements(SM_AUTHREQ_SECURE_CONNECTION | SM_AUTHREQ_BONDING);
 
     gap_set_bondable_mode(1);
     gap_ssp_set_io_capability(SSP_IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
@@ -82,6 +86,7 @@ static void runtime_init(void) {
     gap_ssp_set_auto_accept(1);
     gap_set_local_name("BLU2USB Mouse + Keyboard 00:00:00:00:00:00");
 
+    ble_mouse_init();
     classic_keyboard_init();
 
     g_hci_event_callback.callback = packet_handler;
@@ -96,15 +101,12 @@ static void runtime_init(void) {
 
 void bt_runtime_core1_main(void) {
     flash_safe_execute_core_init();
-
     if (cyw43_arch_init() != PICO_OK) {
         publish_status(BT_EVENT_STACK_ERROR);
         while (true) tight_loop_contents();
     }
-
     runtime_init();
     btstack_run_loop_execute();
-
     publish_status(BT_EVENT_STACK_ERROR);
     while (true) tight_loop_contents();
 }

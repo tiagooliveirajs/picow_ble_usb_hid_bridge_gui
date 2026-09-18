@@ -16,7 +16,12 @@ trap 'rm -rf "$work"' EXIT
   "$root/ui_renderer.c" "$root/ui_profile_feedback.c" "$root/hat.c" \
   "$here/fork05_ui_test.c" -o "$work/fork05_ui_test"
 "$work/fork05_ui_test"
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror -pedantic -I"$root" \
+  "$root/ble_mouse_parser.c" "$here/ble_mouse_parser_test.c" \
+  -o "$work/ble_mouse_parser_test"
+"$work/ble_mouse_parser_test"
 python3 "$here/architecture_test.py" "$root"
 python3 "$here/canonical_hid_contract_test.py" "$root"
 python3 "$here/fixed_usb_contract_test.py" "$root"
+python3 "$here/ble_mouse_contract_test.py" "$root"
 python3 "$here/fork05_contract_test.py" "$root"

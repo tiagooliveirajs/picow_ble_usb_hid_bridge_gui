@@ -15,6 +15,7 @@ pico_sdk_init()
 add_executable(blu2usb_fork_foundation
     main.c bridge_bus.c bt_runtime.c canonical_hid.c classic_keyboard.c classic_keyboard_report.c
     keyboard_report_queue.c storage_owner.c usb_hid.c usb_identity.c usb_descriptors.c
+    ble_mouse.c ble_mouse_parser.c
     ui_interaction.c ui_model.c ui_profile_state.c ui_renderer.c ui_profile_feedback.c
     hat.c hat_pico.c st7789_pico.c ui_runtime.c
 )
@@ -26,8 +27,14 @@ target_link_libraries(blu2usb_fork_foundation PRIVATE
 )
 target_compile_options(blu2usb_fork_foundation PRIVATE -Wall -Wextra)
 target_compile_definitions(blu2usb_fork_foundation PRIVATE CYW43_LWIP=0)
+pico_btstack_make_gatt_header(
+    blu2usb_fork_foundation
+    PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/fork05_hog_host.gatt
+)
 # One explicit application-owned 8 KiB Core1 stack is launched from main.c.
-# HAT/LCD stay on Core0 and must not create or call a parallel BTstack lifecycle.
+# BLE HOGP Mouse + Classic Keyboard share that single Core1 BTstack lifecycle.
+# HAT/LCD stay on Core0 and never initialize or call a parallel BTstack lifecycle.
 # Production operation has no diagnostic CDC, UART dependency or debug USB PID.
 pico_enable_stdio_usb(blu2usb_fork_foundation 0)
 pico_enable_stdio_uart(blu2usb_fork_foundation 0)
