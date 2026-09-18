@@ -43,16 +43,21 @@ target_link_libraries(blu2usb_fork_foundation PRIVATE
     pico_cyw43_arch_threadsafe_background
 )
 
+# Keep useful firmware diagnostics without imposing -Werror on Pico SDK sources
+# that are compiled into this executable. Our host-side project tests remain
+# strict (-Wall -Wextra -Werror).
 target_compile_options(blu2usb_fork_foundation PRIVATE
     -Wall
     -Wextra
-    -Werror
 )
 
 target_compile_definitions(blu2usb_fork_foundation PRIVATE
     CYW43_LWIP=0
-    PICO_CORE1_STACK_SIZE=0
 )
+
+# Core1 still uses the explicit 8 KiB application-owned buffer passed to
+# multicore_launch_core1_with_stack(); the SDK default stack setting is not
+# overridden globally because that also changes SDK-internal code paths.
 
 # Production USB is owned by TinyUSB directly. No SDK USB stdio, UART debug,
 # CDC debug personality or parallel diagnostic product identity is permitted.
