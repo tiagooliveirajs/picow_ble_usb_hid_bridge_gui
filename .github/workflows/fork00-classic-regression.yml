@@ -1,0 +1,39 @@
+name: FORK-00 Classic regression
+
+on:
+  push:
+    branches:
+      - fork/fork-00-baseline-freeze
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  classic-deferred-hid:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout Pico SDK 2.2.0 with pinned BTstack submodule
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.2.0
+          path: pico-sdk
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify SDK / BTstack provenance
+        run: |
+          test "$(git -C pico-sdk describe --tags --exact-match)" = "2.2.0"
+          test "$(git -C pico-sdk/lib/btstack rev-parse HEAD)" = "501e6d2b86e6c92bfb9c390bcf55709938e25ac1"
+
+      - name: Run positive transition test and synchronous-start negative control
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+        run: bash src_fw/poc_bkb3g_classic_hid_cdc/tests/run_host_test.sh
