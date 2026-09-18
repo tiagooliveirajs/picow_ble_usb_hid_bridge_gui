@@ -18,5 +18,5 @@ trap 'rm -rf "$work"' EXIT
 "$work/fork05_ui_test"
 python3 "$here/architecture_test.py" "$root"
 python3 "$here/canonical_hid_contract_test.py" "$root"
-python3 "$here/usb_fixed_contract_test.py" "$root"
+python3 "$here/fixed_usb_contract_test.py" "$root"
 python3 "$here/fork05_contract_test.py" "$root"
