@@ -1,0 +1,108 @@
+name: FORK-03 canonical HID ownership
+
+on:
+  push:
+    branches:
+      - fork/fork-03-canonical-hid-ownership
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-and-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run canonical ownership and inherited architecture tests
+        run: bash src_fw/blu2usb_fork/tests/run_host_tests.sh
+
+      - name: Verify accepted Classic transport implementation remains unchanged
+        run: |
+          git diff --exit-code 37fdf2f38ec11acfbd4a0e51d7ea32590b1cc3cd HEAD -- \
+            src_fw/blu2usb_fork/classic_keyboard.c \
+            src_fw/blu2usb_fork/classic_keyboard.h \
+            src_fw/blu2usb_fork/classic_keyboard_report.c \
+            src_fw/blu2usb_fork/classic_keyboard_report.h \
+            src_fw/poc_bkb3g_classic_hid_cdc/classic_hid.c \
+            src_fw/poc_bkb3g_classic_hid_cdc/classic_hid.h
+
+      - name: Checkout pinned BTstack
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bluekitchen/btstack
+          ref: 501e6d2b86e6c92bfb9c390bcf55709938e25ac1
+          path: btstack
+          persist-credentials: false
+
+      - name: Re-run accepted production Classic adapter tests
+        env:
+          BTSTACK_ROOT: ${{ github.workspace }}/btstack
+        run: bash src_fw/blu2usb_fork/tests/run_classic_host_tests.sh
+
+      - name: Re-run accepted POC deferred-HID controls
+        env:
+          BTSTACK_ROOT: ${{ github.workspace }}/btstack
+        run: bash src_fw/poc_bkb3g_classic_hid_cdc/tests/run_host_test.sh
+
+  pico2w-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install ARM cross toolchain and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi ninja-build
+          arm-none-eabi-gcc --version
+          ninja --version
+
+      - name: Checkout Pico SDK 2.2.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.2.0
+          path: pico-sdk
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify toolchain provenance
+        run: |
+          test "$(git -C pico-sdk describe --tags --exact-match)" = "2.2.0"
+          test "$(git -C pico-sdk/lib/btstack rev-parse HEAD)" = "501e6d2b86e6c92bfb9c390bcf55709938e25ac1"
+
+      - name: Configure Pico 2 W FORK-03 candidate
+        run: |
+          cmake -S src_fw/blu2usb_fork -B build-fork03 -G Ninja \
+            -DPICO_BOARD=pico2_w \
+            -DPICO_SDK_PATH="${{ github.workspace }}/pico-sdk"
+
+      - name: Build Pico 2 W UF2
+        run: cmake --build build-fork03 --target blu2usb_fork_foundation
+
+      - name: Record artifact metadata
+        run: |
+          test -s build-fork03/blu2usb_fork_foundation.uf2
+          cp build-fork03/blu2usb_fork_foundation.uf2 build-fork03/blu2usb_fork03_canonical_hid.uf2
+          sha256sum build-fork03/blu2usb_fork03_canonical_hid.uf2 | tee build-fork03/blu2usb_fork03_canonical_hid.uf2.sha256
+          arm-none-eabi-size build-fork03/blu2usb_fork_foundation.elf | tee build-fork03/blu2usb_fork03_canonical_hid.size.txt
+
+      - name: Upload Pico 2 W FORK-03 candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork03-blu2usb-pico2w-canonical-hid
+          if-no-files-found: error
+          path: |
+            build-fork03/blu2usb_fork03_canonical_hid.uf2
+            build-fork03/blu2usb_fork03_canonical_hid.uf2.sha256
+            build-fork03/blu2usb_fork03_canonical_hid.size.txt
