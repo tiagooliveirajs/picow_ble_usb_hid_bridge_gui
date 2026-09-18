@@ -22,3 +22,4 @@ includes=(
     "$poc_dir/tests/bonding_transition_test.c" "$btstack_dir/src/btstack_util.c" \
     -Wl,--gc-sections -o "$test_dir/bonding_transition_test"
 "$test_dir/bonding_transition_test"
+bash "$poc_dir/tests/run_negative_control.sh"
