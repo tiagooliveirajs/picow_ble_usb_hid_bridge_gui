@@ -93,7 +93,7 @@ enum {
 
 static char const *string_desc_arr[] = {
     (const char[]){0x09, 0x04},
-    "OpenAI POC / TinyUSB",
+    "Pico Classic HID POC",
     "RP2350 BKB-3G Classic HID POC",
     NULL,
     "POC debug log",
