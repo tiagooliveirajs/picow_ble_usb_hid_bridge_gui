@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "bsp/board_api.h"
+#include "pico/flash.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
 #include "tusb.h"
@@ -52,6 +53,12 @@ int main(void) {
     poc_logf("USB: composite CDC ACM debug console + fixed HID keyboard");
     poc_logf("CDC: open /dev/ttyACM* to receive logs; queued boot logs will flush");
     poc_logf("BT: Bluetooth Classic HID Host, target BKB-3G / Bluetooth keyboard 3.0");
+
+    // BTstack's CYW43 integration persists Classic link keys through its TLV
+    // flash bank. Register Core 0 before Core 1 can store a newly bonded key,
+    // otherwise a flash-safe operation may collide with TinyUSB execution.
+    flash_safe_execute_core_init();
+    poc_logf("FLASH: Core0 registered for BTstack TLV link-key writes");
 
     multicore_launch_core1_with_stack(
         classic_hid_core_main,
