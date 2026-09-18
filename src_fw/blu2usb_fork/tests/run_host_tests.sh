@@ -23,5 +23,12 @@ trap 'rm -rf "$work"' EXIT
     -o "$work/keyboard_report_queue_test"
 "$work/keyboard_report_queue_test"
 
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror -pedantic \
+    -I"$root" \
+    "$root/usb_identity.c" "$here/fixed_usb_identity_test.c" \
+    -o "$work/fixed_usb_identity_test"
+"$work/fixed_usb_identity_test"
+
 python3 "$here/architecture_test.py" "$root"
 python3 "$here/canonical_hid_contract_test.py" "$root"
+python3 "$here/fixed_usb_contract_test.py" "$root"

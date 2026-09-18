@@ -15,6 +15,15 @@
 #define BLU2USB_USB_PRODUCT "BLU2USB Mouse + Keyboard"
 
 typedef struct {
+    uint16_t vid;
+    uint16_t pid;
+    uint16_t bcd_device;
+    uint8_t interface_count;
+    uint8_t mouse_interface;
+    uint8_t keyboard_interface;
+} usb_hid_identity_t;
+
+typedef struct {
     uint8_t buttons;
     int8_t x;
     int8_t y;
@@ -27,6 +36,10 @@ typedef struct {
     uint8_t reserved;
     uint8_t keycodes[BLU2USB_USB_KEYCODE_COUNT];
 } usb_keyboard_report_t;
+
+/* Immutable production identity. It is independent of Bluetooth topology and
+ * exists from USB initialization at boot. */
+const usb_hid_identity_t *usb_hid_identity(void);
 
 bool usb_hid_init(void);
 void usb_hid_task(void);

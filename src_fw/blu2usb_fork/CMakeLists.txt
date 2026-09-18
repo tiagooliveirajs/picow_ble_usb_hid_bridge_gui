@@ -27,6 +27,7 @@ add_executable(blu2usb_fork_foundation
     keyboard_report_queue.c
     storage_owner.c
     usb_hid.c
+    usb_identity.c
     usb_descriptors.c
 )
 
