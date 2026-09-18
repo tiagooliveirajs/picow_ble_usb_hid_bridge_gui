@@ -4,8 +4,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "canonical_source.h"
+
 #define BRIDGE_MESSAGE_PAYLOAD_SIZE 32u
 #define BRIDGE_QUEUE_CAPACITY 32u
+#define BRIDGE_RELEASE_SOURCE_CAPACITY CANONICAL_SOURCE_CAPACITY
 
 #define BRIDGE_CHANNEL_CONTROL 1u
 #define BRIDGE_CHANNEL_STATUS 2u
@@ -29,14 +32,15 @@ bool bridge_bus_take_bt_event(bridge_message_t *message);
 bool bridge_bus_take_app_overflow(void);
 bool bridge_bus_take_bt_overflow(void);
 
-/* For release-sensitive INPUT messages, payload[0] is the stable canonical
- * source ID. If publication fails because the bounded BT->Core0 queue is full,
- * the source bit is latched independently so Core0 can tear down only that
- * source after draining older queued snapshots. */
-uint32_t bridge_bus_take_release_sources(void);
+/* Failed release-sensitive canonical INPUT publications retain exact kind +
+ * instance identities in a bounded lock-free latch. Core0 drains queued older
+ * snapshots first and then tears down only these sources. */
+uint8_t bridge_bus_take_release_sources(
+    canonical_source_t *sources,
+    uint8_t capacity);
 
-/* Fallback for a release-sensitive publication whose source cannot be safely
- * identified. This is intentionally separate from the normal source-aware path. */
+/* Used only if the failed publication has no valid source prefix or if the
+ * bounded release-identity latch itself is exhausted. */
 bool bridge_bus_take_release_required(void);
 
 #endif

@@ -33,7 +33,7 @@ static usb_keyboard_report_t to_usb_keyboard_report(
     return report;
 }
 
-static void recover_keyboard_source(uint8_t source) {
+static void recover_keyboard_source(canonical_source_t source) {
     canonical_keyboard_report_t canonical_report;
     bool changed = false;
     if (!canonical_hid_release_source(
@@ -42,7 +42,7 @@ static void recover_keyboard_source(uint8_t source) {
     }
     (void)changed;
 
-    if (canonical_source_is_keyboard(source)) {
+    if (canonical_source_kind_is_keyboard(source.kind)) {
         const usb_keyboard_report_t report =
             to_usb_keyboard_report(&canonical_report);
         usb_hid_replace_keyboard_state(&report);
@@ -54,6 +54,7 @@ static void apply_keyboard_snapshot(const bridge_message_t *message) {
 
     keyboard_input_snapshot_t snapshot;
     memcpy(&snapshot, message->payload, sizeof(snapshot));
+    const canonical_source_t source = keyboard_input_snapshot_source(&snapshot);
 
     canonical_keyboard_report_t canonical_report;
     bool changed = false;
@@ -67,24 +68,24 @@ static void apply_keyboard_snapshot(const bridge_message_t *message) {
         to_usb_keyboard_report(&canonical_report);
     if (usb_hid_submit_keyboard(&report)) return;
 
-    /* The USB queue lost ordering capacity for this source. Remove exactly the
-     * source that triggered the failed publication and replace pending USB
-     * reports with the aggregate state still owned by all other sources. */
-    recover_keyboard_source(snapshot.source);
+    /* USB ordering capacity was lost for this source. Tear down exactly that
+     * kind+instance and replace stale pending reports with the aggregate state
+     * still owned by every surviving source. */
+    recover_keyboard_source(source);
 }
 
 static void recover_dropped_bt_sources(void) {
-    const uint32_t release_sources = bridge_bus_take_release_sources();
+    canonical_source_t dropped[BRIDGE_RELEASE_SOURCE_CAPACITY];
+    const uint8_t dropped_count = bridge_bus_take_release_sources(
+        dropped, BRIDGE_RELEASE_SOURCE_CAPACITY);
     bool keyboard_recovery_required = false;
 
-    for (uint8_t source = 1u; source <= CANONICAL_SOURCE_CAPACITY; ++source) {
-        if ((release_sources & (UINT32_C(1) << source)) == 0u) continue;
-
+    for (uint8_t i = 0u; i < dropped_count; ++i) {
         canonical_keyboard_report_t ignored_report;
         bool ignored_changed = false;
         (void)canonical_hid_release_source(
-            &g_canonical_hid, source, &ignored_report, &ignored_changed);
-        if (canonical_source_is_keyboard(source)) {
+            &g_canonical_hid, dropped[i], &ignored_report, &ignored_changed);
+        if (canonical_source_kind_is_keyboard(dropped[i].kind)) {
             keyboard_recovery_required = true;
         }
     }

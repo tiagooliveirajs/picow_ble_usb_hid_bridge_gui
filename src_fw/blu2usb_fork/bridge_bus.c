@@ -12,7 +12,7 @@ typedef struct {
 
 static bridge_ring_t g_app_to_bt;
 static bridge_ring_t g_bt_to_app;
-static atomic_uint g_release_source_mask = ATOMIC_VAR_INIT(0u);
+static atomic_uint g_release_sources[BRIDGE_RELEASE_SOURCE_CAPACITY];
 static atomic_bool g_release_required = ATOMIC_VAR_INIT(false);
 
 static void ring_reset(bridge_ring_t *ring) {
@@ -66,14 +66,37 @@ static bool ring_take_overflow(bridge_ring_t *ring) {
         &ring->overflowed, false, memory_order_acq_rel);
 }
 
+static bool latch_release_source(canonical_source_t source) {
+    const unsigned int encoded = canonical_source_encode(source);
+    if (encoded == 0u) return false;
+
+    for (size_t i = 0u; i < BRIDGE_RELEASE_SOURCE_CAPACITY; ++i) {
+        const unsigned int observed = atomic_load_explicit(
+            &g_release_sources[i], memory_order_acquire);
+        if (observed == encoded) return true;
+    }
+
+    for (size_t i = 0u; i < BRIDGE_RELEASE_SOURCE_CAPACITY; ++i) {
+        unsigned int expected = 0u;
+        if (atomic_compare_exchange_strong_explicit(
+                &g_release_sources[i],
+                &expected,
+                encoded,
+                memory_order_acq_rel,
+                memory_order_acquire)) {
+            return true;
+        }
+        if (expected == encoded) return true;
+    }
+    return false;
+}
+
 static void latch_release_for_failed_message(const bridge_message_t *message) {
-    if (message->channel == BRIDGE_CHANNEL_INPUT && message->length >= 1u) {
-        const uint8_t source = message->payload[0];
-        if (source > 0u && source < 32u) {
-            atomic_fetch_or_explicit(
-                &g_release_source_mask,
-                (unsigned int)(UINT32_C(1) << source),
-                memory_order_acq_rel);
+    if (message->channel == BRIDGE_CHANNEL_INPUT &&
+        message->length >= CANONICAL_INPUT_SOURCE_PREFIX_SIZE) {
+        const canonical_source_t source =
+            canonical_source_from_input_prefix(message->payload);
+        if (canonical_source_is_valid(source) && latch_release_source(source)) {
             return;
         }
     }
@@ -83,7 +106,9 @@ static void latch_release_for_failed_message(const bridge_message_t *message) {
 void bridge_bus_init(void) {
     ring_reset(&g_app_to_bt);
     ring_reset(&g_bt_to_app);
-    atomic_store_explicit(&g_release_source_mask, 0u, memory_order_relaxed);
+    for (size_t i = 0u; i < BRIDGE_RELEASE_SOURCE_CAPACITY; ++i) {
+        atomic_store_explicit(&g_release_sources[i], 0u, memory_order_relaxed);
+    }
     atomic_store_explicit(&g_release_required, false, memory_order_relaxed);
 }
 
@@ -118,9 +143,21 @@ bool bridge_bus_take_bt_overflow(void) {
     return ring_take_overflow(&g_bt_to_app);
 }
 
-uint32_t bridge_bus_take_release_sources(void) {
-    return (uint32_t)atomic_exchange_explicit(
-        &g_release_source_mask, 0u, memory_order_acq_rel);
+uint8_t bridge_bus_take_release_sources(
+    canonical_source_t *sources,
+    uint8_t capacity) {
+    if (sources == NULL || capacity == 0u) return 0u;
+
+    uint8_t count = 0u;
+    for (size_t i = 0u;
+         i < BRIDGE_RELEASE_SOURCE_CAPACITY && count < capacity;
+         ++i) {
+        const unsigned int encoded = atomic_exchange_explicit(
+            &g_release_sources[i], 0u, memory_order_acq_rel);
+        if (encoded == 0u) continue;
+        sources[count++] = canonical_source_decode(encoded);
+    }
+    return count;
 }
 
 bool bridge_bus_take_release_required(void) {
