@@ -31,5 +31,7 @@ typedef struct {
 bool usb_hid_init(void);
 void usb_hid_task(void);
 void usb_hid_release_all(void);
+void usb_hid_release_keyboard(void);
+bool usb_hid_submit_keyboard(const usb_keyboard_report_t *report);
 
 #endif

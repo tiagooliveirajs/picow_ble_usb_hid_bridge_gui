@@ -8,6 +8,7 @@
 #include "pico/stdlib.h"
 
 #include "bridge_bus.h"
+#include "classic_keyboard.h"
 
 #define COMMAND_POLL_INTERVAL_MS 10u
 
@@ -27,9 +28,18 @@ static void command_poll(btstack_timer_source_t *timer) {
     bridge_message_t message;
 
     while (bridge_bus_take_app_command(&message)) {
-        if (message.channel == BRIDGE_CHANNEL_CONTROL &&
-            message.type == BT_COMMAND_PING) {
-            publish_status(BT_EVENT_COMMAND_ACK);
+        if (message.channel != BRIDGE_CHANNEL_CONTROL) continue;
+
+        switch (message.type) {
+            case BT_COMMAND_PING:
+                publish_status(BT_EVENT_COMMAND_ACK);
+                break;
+            case BT_COMMAND_CLASSIC_CANCEL:
+            case BT_COMMAND_CLASSIC_RETRY:
+                classic_keyboard_handle_command(message.type);
+                break;
+            default:
+                break;
         }
     }
 
@@ -50,12 +60,13 @@ static void packet_handler(
     if (hci_event_packet_get_type(packet) == BTSTACK_EVENT_STATE &&
         btstack_event_state_get_state(packet) == HCI_STATE_WORKING) {
         publish_status(BT_EVENT_STACK_WORKING);
+        classic_keyboard_on_stack_working();
     }
 }
 
 static void runtime_init(void) {
-    // One dual-mode stack owner on Core1. Profile-specific BLE HOGP and Classic
-    // HID sessions are intentionally introduced by later gates.
+    // One dual-mode stack owner on Core1. Profile adapters register with this
+    // lifecycle; they never initialize CYW43, L2CAP or HCI power themselves.
     l2cap_init();
     sm_init();
     gatt_client_init();
@@ -69,7 +80,9 @@ static void runtime_init(void) {
     gap_ssp_set_authentication_requirement(
         SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_GENERAL_BONDING);
     gap_ssp_set_auto_accept(1);
-    gap_set_local_name("BLU2USB Fork Foundation 00:00:00:00:00:00");
+    gap_set_local_name("BLU2USB Mouse + Keyboard 00:00:00:00:00:00");
+
+    classic_keyboard_init();
 
     g_hci_event_callback.callback = packet_handler;
     hci_add_event_handler(&g_hci_event_callback);
@@ -82,8 +95,6 @@ static void runtime_init(void) {
 }
 
 void bt_runtime_core1_main(void) {
-    // Participate in the SDK flash-safe protocol before BTstack can persist
-    // Classic link keys or BLE credentials from this core.
     flash_safe_execute_core_init();
 
     if (cyw43_arch_init() != PICO_OK) {

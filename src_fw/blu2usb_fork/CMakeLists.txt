@@ -21,6 +21,8 @@ add_executable(blu2usb_fork_foundation
     main.c
     bridge_bus.c
     bt_runtime.c
+    classic_keyboard.c
+    classic_keyboard_report.c
     storage_owner.c
     usb_hid.c
     usb_descriptors.c
@@ -43,9 +45,6 @@ target_link_libraries(blu2usb_fork_foundation PRIVATE
     pico_cyw43_arch_threadsafe_background
 )
 
-# Keep useful firmware diagnostics without imposing -Werror on Pico SDK sources
-# that are compiled into this executable. Our host-side project tests remain
-# strict (-Wall -Wextra -Werror).
 target_compile_options(blu2usb_fork_foundation PRIVATE
     -Wall
     -Wextra
@@ -55,12 +54,11 @@ target_compile_definitions(blu2usb_fork_foundation PRIVATE
     CYW43_LWIP=0
 )
 
-# Core1 still uses the explicit 8 KiB application-owned buffer passed to
-# multicore_launch_core1_with_stack(); the SDK default stack setting is not
-# overridden globally because that also changes SDK-internal code paths.
+# One explicit application-owned 8 KiB Core1 stack is launched from main.c.
+# Classic profile code is an adapter inside the single Core1 runtime; it must
+# never initialize a second CYW43/BTstack lifecycle.
 
-# Production USB is owned by TinyUSB directly. No SDK USB stdio, UART debug,
-# CDC debug personality or parallel diagnostic product identity is permitted.
+# Production operation has no diagnostic CDC, UART dependency or debug USB PID.
 pico_enable_stdio_usb(blu2usb_fork_foundation 0)
 pico_enable_stdio_uart(blu2usb_fork_foundation 0)
 

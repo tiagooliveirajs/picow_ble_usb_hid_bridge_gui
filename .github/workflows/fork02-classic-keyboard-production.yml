@@ -1,0 +1,104 @@
+name: FORK-02 production Classic Keyboard
+
+on:
+  push:
+    branches:
+      - fork/fork-02-classic-keyboard-production
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-and-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-run FORK-01 architecture tests
+        run: bash src_fw/blu2usb_fork/tests/run_host_tests.sh
+
+      - name: Verify accepted POC implementation remains untouched
+        run: |
+          git diff --exit-code cb0e7e146edc36cb65bbd6e27fcace25cc6e2b48 HEAD -- \
+            src_fw/poc_bkb3g_classic_hid_cdc/classic_hid.c \
+            src_fw/poc_bkb3g_classic_hid_cdc/classic_hid.h
+
+      - name: Checkout pinned BTstack
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bluekitchen/btstack
+          ref: 501e6d2b86e6c92bfb9c390bcf55709938e25ac1
+          path: btstack
+          persist-credentials: false
+
+      - name: Run production Classic adapter host tests
+        env:
+          BTSTACK_ROOT: ${{ github.workspace }}/btstack
+        run: bash src_fw/blu2usb_fork/tests/run_classic_host_tests.sh
+
+      - name: Re-run accepted POC deferred-HID controls
+        env:
+          BTSTACK_ROOT: ${{ github.workspace }}/btstack
+        run: bash src_fw/poc_bkb3g_classic_hid_cdc/tests/run_host_test.sh
+
+  pico2w-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install ARM cross toolchain and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi ninja-build
+          arm-none-eabi-gcc --version
+          ninja --version
+
+      - name: Checkout Pico SDK 2.2.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.2.0
+          path: pico-sdk
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify toolchain provenance
+        run: |
+          test "$(git -C pico-sdk describe --tags --exact-match)" = "2.2.0"
+          test "$(git -C pico-sdk/lib/btstack rev-parse HEAD)" = "501e6d2b86e6c92bfb9c390bcf55709938e25ac1"
+
+      - name: Configure Pico 2 W production Classic Keyboard candidate
+        run: |
+          cmake -S src_fw/blu2usb_fork -B build-fork02 -G Ninja \
+            -DPICO_BOARD=pico2_w \
+            -DPICO_SDK_PATH="${{ github.workspace }}/pico-sdk"
+
+      - name: Build Pico 2 W UF2
+        run: cmake --build build-fork02 --target blu2usb_fork_foundation
+
+      - name: Record artifact metadata
+        run: |
+          test -s build-fork02/blu2usb_fork_foundation.uf2
+          cp build-fork02/blu2usb_fork_foundation.uf2 build-fork02/blu2usb_fork02_classic_keyboard.uf2
+          sha256sum build-fork02/blu2usb_fork02_classic_keyboard.uf2 | tee build-fork02/blu2usb_fork02_classic_keyboard.uf2.sha256
+          arm-none-eabi-size build-fork02/blu2usb_fork_foundation.elf | tee build-fork02/blu2usb_fork02_classic_keyboard.size.txt
+
+      - name: Upload Pico 2 W FORK-02 candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork02-blu2usb-pico2w-classic-keyboard
+          if-no-files-found: error
+          path: |
+            build-fork02/blu2usb_fork02_classic_keyboard.uf2
+            build-fork02/blu2usb_fork02_classic_keyboard.uf2.sha256
+            build-fork02/blu2usb_fork02_classic_keyboard.size.txt
