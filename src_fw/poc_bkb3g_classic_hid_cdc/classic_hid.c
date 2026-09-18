@@ -33,6 +33,7 @@ typedef enum {
     APP_WAITING_FOR_BTSTACK = 0,
     APP_INQUIRY,
     APP_RESOLVING_NAMES,
+    APP_BONDING,
     APP_CONNECTING,
     APP_CONNECTED,
 } app_state_t;
@@ -48,6 +49,7 @@ static btstack_packet_callback_registration_t g_hci_event_callback_registration;
 
 static void start_inquiry(void);
 static void request_next_remote_name(void);
+static void bond_target(const bd_addr_t address);
 static void connect_target(const bd_addr_t address);
 
 bool classic_hid_is_ready(void) {
@@ -83,6 +85,38 @@ static void start_inquiry(void) {
     }
 }
 
+static void bond_target(const bd_addr_t address) {
+    memcpy(g_target_addr, address, sizeof(bd_addr_t));
+    gap_inquiry_stop();
+
+    g_app_state = APP_BONDING;
+    g_hid_host_cid = 0u;
+    g_hid_descriptor_available = false;
+
+    poc_logf("TARGET: %s", bd_addr_to_str(g_target_addr));
+    poc_logf("BOND: starting dedicated Classic bonding before HID");
+    poc_logf("BOND: stale local link key will be discarded by BTstack");
+    poc_logf("PAIRING: if a six-digit passkey appears, type it on the keyboard then Enter");
+
+    // The BKB-3G rejects unauthenticated HID L2CAP channels with 0x66
+    // (L2CAP_CONNECTION_RESPONSE_RESULT_REFUSED_SECURITY).  Dedicated bonding
+    // intentionally creates/authenticates an ACL first, stores the new link key,
+    // disconnects, and emits GAP_EVENT_DEDICATED_BONDING_COMPLETED.  Only then
+    // do we open the HID Control/Interrupt channels.
+    //
+    // Require MITM protection.  A keyboard can enter the displayed passkey and
+    // legacy pairing can still use the PIN callback below.
+    const int status = gap_dedicated_bonding(g_target_addr, 1);
+    if (status != ERROR_CODE_SUCCESS) {
+        poc_logf("ERROR: gap_dedicated_bonding immediate status 0x%02x",
+                 (unsigned)status);
+        start_inquiry();
+        return;
+    }
+
+    poc_logf("BOND: ACL/authentication procedure started");
+}
+
 static void connect_target(const bd_addr_t address) {
     memcpy(g_target_addr, address, sizeof(bd_addr_t));
     gap_inquiry_stop();
@@ -90,9 +124,7 @@ static void connect_target(const bd_addr_t address) {
     g_app_state = APP_CONNECTING;
     g_hid_descriptor_available = false;
 
-    poc_logf("TARGET: %s", bd_addr_to_str(g_target_addr));
-    poc_logf("CONNECT: opening Bluetooth Classic HID host connection");
-    poc_logf("PAIRING: if a six-digit passkey appears, type it on the keyboard then Enter");
+    poc_logf("CONNECT: bonding complete; opening Bluetooth Classic HID host connection");
 
     uint16_t new_cid = 0u;
     const uint8_t status =
@@ -159,7 +191,7 @@ static void handle_inquiry_result(uint8_t *packet) {
 
         if (target_name_matches(name)) {
             poc_logf("MATCH: target found in EIR");
-            connect_target(address);
+            bond_target(address);
             return;
         }
     } else {
@@ -204,7 +236,7 @@ static void handle_remote_name_complete(uint8_t *packet) {
 
         if (target_name_matches(name)) {
             poc_logf("MATCH: target found via remote-name request");
-            connect_target(address);
+            bond_target(address);
             return;
         }
     } else {
@@ -342,6 +374,37 @@ static void packet_handler(uint8_t packet_type,
             handle_remote_name_complete(packet);
             break;
 
+        case GAP_EVENT_PAIRING_STARTED:
+            poc_logf("PAIRING: started ssp=%u initiator=%u",
+                     packet[10], packet[11]);
+            break;
+
+        case GAP_EVENT_PAIRING_COMPLETE:
+            poc_logf("PAIRING: complete status=0x%02x", packet[10]);
+            break;
+
+        case GAP_EVENT_DEDICATED_BONDING_COMPLETED: {
+            const uint8_t status = packet[2];
+            poc_logf("BOND: dedicated bonding complete status=0x%02x", status);
+
+            if (g_app_state != APP_BONDING) {
+                poc_logf("BOND: completion received outside bonding state; ignoring");
+                break;
+            }
+
+            if (status != ERROR_CODE_SUCCESS) {
+                poc_logf("BOND: failed; keep keyboard in pairing mode and retrying discovery");
+                g_hid_host_cid = 0u;
+                g_hid_descriptor_available = false;
+                start_inquiry();
+                break;
+            }
+
+            poc_logf("BOND: authenticated link key established");
+            connect_target(g_target_addr);
+            break;
+        }
+
         case HCI_EVENT_PIN_CODE_REQUEST:
             hci_event_pin_code_request_get_bd_addr(packet, event_addr);
             poc_logf("PAIRING: legacy PIN requested by %s", bd_addr_to_str(event_addr));
@@ -446,6 +509,11 @@ static void packet_handler(uint8_t packet_type,
                     break;
                 }
 
+                case HID_SUBEVENT_SNIFF_SUBRATING_PARAMS:
+                    // Informational HID event. It is not a pairing/connection error.
+                    poc_logf("HID: sniff-subrating parameters received");
+                    break;
+
                 default:
                     poc_logf("HID: unhandled subevent 0x%02x",
                              hci_event_hid_meta_get_subevent_code(packet));
@@ -469,6 +537,7 @@ static void classic_hid_init(void) {
     hci_set_master_slave_policy(HCI_ROLE_MASTER);
     hci_set_inquiry_mode(INQUIRY_MODE_RSSI_AND_EIR);
 
+    gap_set_bondable_mode(1);
     gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_ONLY);
     gap_set_local_name("RP2350 Classic HID POC 00:00:00:00:00:00");
     gap_discoverable_control(1);
